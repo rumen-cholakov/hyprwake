@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub general: GeneralConfig,
@@ -60,16 +60,6 @@ fn default_ignore_classes() -> Vec<String> {
     .into_iter()
     .map(String::from)
     .collect()
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            general: GeneralConfig::default(),
-            filters: FilterConfig::default(),
-            apps: HashMap::new(),
-        }
-    }
 }
 
 impl Default for GeneralConfig {
