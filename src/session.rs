@@ -120,7 +120,7 @@ pub fn session_exists(name: &str, sessions_dir: &Path) -> bool {
 
 // === Raw hyprctl JSON structs (what hyprctl returns) ===
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HyprClient {
     pub address: String,
     pub class: String,
@@ -136,13 +136,13 @@ pub struct HyprClient {
     pub pid: u32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HyprWorkspace {
     pub id: i32,
     pub name: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HyprMonitor {
     pub name: String,
     pub width: u32,
