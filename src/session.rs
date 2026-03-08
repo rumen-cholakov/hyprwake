@@ -41,6 +41,83 @@ pub struct LaunchInfo {
     pub hint: Option<String>,
 }
 
+// === Session storage ===
+
+use std::path::Path;
+
+#[derive(Debug, thiserror::Error)]
+pub enum SessionError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("session '{0}' not found")]
+    NotFound(String),
+    #[error("session '{0}' already exists")]
+    AlreadyExists(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionSummary {
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub client_count: usize,
+}
+
+pub fn save_session(session: &Session, sessions_dir: &Path) -> Result<(), SessionError> {
+    std::fs::create_dir_all(sessions_dir)?;
+    let path = sessions_dir.join(format!("{}.json", session.name));
+    let json = serde_json::to_string_pretty(session)?;
+    std::fs::write(path, json)?;
+    Ok(())
+}
+
+pub fn load_session(name: &str, sessions_dir: &Path) -> Result<Session, SessionError> {
+    let path = sessions_dir.join(format!("{name}.json"));
+    if !path.exists() {
+        return Err(SessionError::NotFound(name.to_string()));
+    }
+    let content = std::fs::read_to_string(path)?;
+    Ok(serde_json::from_str(&content)?)
+}
+
+pub fn list_sessions(sessions_dir: &Path) -> Result<Vec<SessionSummary>, SessionError> {
+    if !sessions_dir.exists() {
+        return Ok(vec![]);
+    }
+    let mut summaries = Vec::new();
+    for entry in std::fs::read_dir(sessions_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().map(|e| e == "json").unwrap_or(false) {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(session) = serde_json::from_str::<Session>(&content) {
+                    summaries.push(SessionSummary {
+                        name: session.name.clone(),
+                        created_at: session.created_at,
+                        client_count: session.clients.len(),
+                    });
+                }
+            }
+        }
+    }
+    summaries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(summaries)
+}
+
+pub fn delete_session(name: &str, sessions_dir: &Path) -> Result<(), SessionError> {
+    let path = sessions_dir.join(format!("{name}.json"));
+    if !path.exists() {
+        return Err(SessionError::NotFound(name.to_string()));
+    }
+    std::fs::remove_file(path)?;
+    Ok(())
+}
+
+pub fn session_exists(name: &str, sessions_dir: &Path) -> bool {
+    sessions_dir.join(format!("{name}.json")).exists()
+}
+
 // === Raw hyprctl JSON structs (what hyprctl returns) ===
 
 #[derive(Debug, Clone, Deserialize)]
@@ -76,6 +153,7 @@ pub struct HyprMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile;
 
     #[test]
     fn test_session_roundtrip() {
@@ -137,6 +215,79 @@ mod tests {
         assert_eq!(client.launch.command, "kitty");
         assert!(client.launch.args.is_empty());
         assert!(client.launch.hint.is_none());
+    }
+
+    fn make_test_session(name: &str) -> Session {
+        Session {
+            name: name.to_string(),
+            created_at: Utc::now(),
+            hyprland_version: "0.54.1".to_string(),
+            monitors: vec![],
+            clients: vec![SessionClient {
+                class: "kitty".to_string(),
+                title: "test".to_string(),
+                workspace: 1,
+                monitor: "DP-4".to_string(),
+                at: [0, 0],
+                size: [800, 600],
+                floating: false,
+                fullscreen: 0,
+                focus_history_id: 0,
+                launch: LaunchInfo {
+                    command: "kitty".to_string(),
+                    args: vec![],
+                    hint: None,
+                },
+            }],
+        }
+    }
+
+    #[test]
+    fn test_save_and_load_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = make_test_session("work");
+        save_session(&session, dir.path()).unwrap();
+        let loaded = load_session("work", dir.path()).unwrap();
+        assert_eq!(loaded.name, "work");
+        assert_eq!(loaded.clients.len(), 1);
+    }
+
+    #[test]
+    fn test_list_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        save_session(&make_test_session("a"), dir.path()).unwrap();
+        save_session(&make_test_session("b"), dir.path()).unwrap();
+        let list = list_sessions(dir.path()).unwrap();
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn test_delete_session() {
+        let dir = tempfile::tempdir().unwrap();
+        save_session(&make_test_session("old"), dir.path()).unwrap();
+        delete_session("old", dir.path()).unwrap();
+        assert!(load_session("old", dir.path()).is_err());
+    }
+
+    #[test]
+    fn test_load_nonexistent_session() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_session("nope", dir.path()).is_err());
+    }
+
+    #[test]
+    fn test_list_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let list = list_sessions(dir.path()).unwrap();
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn test_session_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!session_exists("x", dir.path()));
+        save_session(&make_test_session("x"), dir.path()).unwrap();
+        assert!(session_exists("x", dir.path()));
     }
 
     #[test]
