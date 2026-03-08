@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::hyprctl::{HyprctlClient, HyprctlError};
 use crate::session::{Session, SessionClient};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -43,6 +43,18 @@ pub fn restore_session(
 ) -> Result<RestoreReport, RestoreError> {
     let mut report = RestoreReport::default();
 
+    // Fetch current windows once to detect already-running duplicates.
+    let mut existing_counts: HashMap<(String, i32), usize> = HashMap::new();
+    if !dry_run {
+        if let Ok(current) = hyprctl.get_clients() {
+            for c in &current {
+                *existing_counts
+                    .entry((c.class.clone(), c.workspace.id))
+                    .or_insert(0) += 1;
+            }
+        }
+    }
+
     // Group by workspace (BTreeMap gives us sorted workspace order for free).
     let mut by_workspace: BTreeMap<i32, Vec<&SessionClient>> = BTreeMap::new();
     for client in &session.clients {
@@ -65,6 +77,21 @@ pub fn restore_session(
                 }
                 report.restored += 1;
                 continue;
+            }
+
+            // Count-based duplicate detection: skip if enough instances already exist.
+            let key = (client.class.clone(), client.workspace);
+            if let Some(count) = existing_counts.get_mut(&key) {
+                if *count > 0 {
+                    let msg = format!(
+                        "SKIP: {} already on ws={}",
+                        client.class, client.workspace
+                    );
+                    report.details.push(msg);
+                    report.skipped += 1;
+                    *count -= 1;
+                    continue;
+                }
             }
 
             // Validate the binary is available before attempting to spawn.
@@ -521,6 +548,211 @@ mod tests {
         assert_eq!(report.skipped, 1, "missing binary should be skipped");
         assert_eq!(report.restored, 0);
         assert_eq!(report.failed, 0);
+        // No dispatches should have been sent.
+        assert!(mock.dispatches().is_empty());
+    }
+
+    // ── Test: skips duplicate class+workspace already running ────────────
+
+    #[test]
+    fn test_restore_skips_duplicate_class_workspace() {
+        let existing_window = HyprClient {
+            address: "0xexisting".to_string(),
+            class: "kitty".to_string(),
+            title: "kitty".to_string(),
+            workspace: crate::hyprctl::HyprWorkspace {
+                id: 1,
+                name: "1".to_string(),
+            },
+            monitor: 0,
+            at: [0, 0],
+            size: [800, 600],
+            floating: false,
+            fullscreen: 0,
+            focus_history_id: 0,
+            pid: 9999,
+        };
+
+        // First get_clients() call returns the existing window (duplicate check).
+        // Subsequent calls would also return it (mock clamps to last state).
+        let mock = MockHyprctl::new(vec![vec![existing_window]]);
+
+        let client = make_client(
+            "kitty",
+            1,
+            [0, 0],
+            [800, 600],
+            false,
+            0,
+            "kitty",
+            vec![],
+            None,
+        );
+        let session = make_session(vec![client]);
+        let config = Config::default();
+
+        let report = restore_session(&session, &mock, &config, false, true).unwrap();
+
+        assert_eq!(report.skipped, 1, "duplicate should be skipped");
+        assert_eq!(report.restored, 0);
+        assert_eq!(report.failed, 0);
+        assert!(
+            report
+                .details
+                .iter()
+                .any(|d| d.contains("SKIP: kitty already on ws=1")),
+            "details should mention the skipped duplicate; got: {:?}",
+            report.details
+        );
+        // No dispatches should have been sent.
+        assert!(mock.dispatches().is_empty());
+    }
+
+    // ── Test: dry-run does NOT skip duplicates ──────────────────────────
+
+    #[test]
+    fn test_restore_dry_run_ignores_duplicates() {
+        let existing_window = HyprClient {
+            address: "0xexisting".to_string(),
+            class: "kitty".to_string(),
+            title: "kitty".to_string(),
+            workspace: crate::hyprctl::HyprWorkspace {
+                id: 1,
+                name: "1".to_string(),
+            },
+            monitor: 0,
+            at: [0, 0],
+            size: [800, 600],
+            floating: false,
+            fullscreen: 0,
+            focus_history_id: 0,
+            pid: 9999,
+        };
+
+        // Even though the existing window matches, dry-run should ignore it.
+        let mock = MockHyprctl::new(vec![vec![existing_window]]);
+
+        let client = make_client(
+            "kitty",
+            1,
+            [0, 0],
+            [800, 600],
+            false,
+            0,
+            "kitty",
+            vec![],
+            None,
+        );
+        let session = make_session(vec![client]);
+        let config = Config::default();
+
+        let report = restore_session(&session, &mock, &config, true, true).unwrap();
+
+        assert_eq!(
+            report.restored, 1,
+            "dry-run should not skip duplicates"
+        );
+        assert_eq!(report.skipped, 0);
+        assert_eq!(report.failed, 0);
+        // No real dispatches in dry-run.
+        assert!(mock.dispatches().is_empty());
+    }
+
+    // ── Test: partial duplicates — restore only the missing count ────────
+
+    #[test]
+    fn test_restore_partial_duplicate_restores_missing() {
+        // 2 existing "testapp" windows on ws=5.
+        let existing = vec![
+            HyprClient {
+                address: "0xaaa".to_string(),
+                class: "testapp".to_string(),
+                title: "testapp".to_string(),
+                workspace: crate::hyprctl::HyprWorkspace {
+                    id: 5,
+                    name: "5".to_string(),
+                },
+                monitor: 0,
+                at: [0, 0],
+                size: [800, 600],
+                floating: false,
+                fullscreen: 0,
+                focus_history_id: 0,
+                pid: 1001,
+            },
+            HyprClient {
+                address: "0xbbb".to_string(),
+                class: "testapp".to_string(),
+                title: "testapp".to_string(),
+                workspace: crate::hyprctl::HyprWorkspace {
+                    id: 5,
+                    name: "5".to_string(),
+                },
+                monitor: 0,
+                at: [100, 0],
+                size: [800, 600],
+                floating: false,
+                fullscreen: 0,
+                focus_history_id: 0,
+                pid: 1002,
+            },
+        ];
+
+        let mock = MockHyprctl::new(vec![existing]);
+
+        // Session wants 3 "testapp" on ws=5 with a nonexistent binary.
+        let clients: Vec<SessionClient> = (0..3)
+            .map(|i| {
+                make_client(
+                    "testapp",
+                    5,
+                    [i * 100, 0],
+                    [800, 600],
+                    false,
+                    0,
+                    "nonexistent_binary_xyz_123",
+                    vec![],
+                    None,
+                )
+            })
+            .collect();
+
+        let session = make_session(clients);
+        let config = Config::default();
+
+        let report = restore_session(&session, &mock, &config, false, true).unwrap();
+
+        // 2 skipped as duplicates, 1 skipped as binary-not-found → total 3.
+        assert_eq!(report.skipped, 3, "expected 3 skipped; got {}", report.skipped);
+        assert_eq!(report.restored, 0);
+        assert_eq!(report.failed, 0);
+
+        // Exactly 2 detail lines should mention "already on ws=".
+        let dup_msgs: Vec<_> = report
+            .details
+            .iter()
+            .filter(|d| d.contains("SKIP: testapp already on ws=5"))
+            .collect();
+        assert_eq!(
+            dup_msgs.len(),
+            2,
+            "expected 2 duplicate-skip messages; got {:?}",
+            report.details
+        );
+
+        // Exactly 1 detail line should mention "binary".
+        let bin_msgs: Vec<_> = report
+            .details
+            .iter()
+            .filter(|d| d.contains("binary"))
+            .collect();
+        assert_eq!(
+            bin_msgs.len(),
+            1,
+            "expected 1 binary-not-found message; got {:?}",
+            report.details
+        );
+
         // No dispatches should have been sent.
         assert!(mock.dispatches().is_empty());
     }

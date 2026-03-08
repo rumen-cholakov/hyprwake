@@ -3,6 +3,7 @@ use crate::hyprctl::{HyprctlClient, HyprctlError};
 use crate::process::{ProcessInfoProvider, ProcessError};
 use crate::session::{LaunchInfo, Monitor, Session, SessionClient};
 use chrono::Utc;
+use std::collections::HashMap;
 
 // ── Error ──────────────────────────────────────────────────────────────────
 
@@ -32,10 +33,11 @@ pub fn capture_session(
         .get_hyprland_version()
         .unwrap_or_else(|_| "unknown".to_string());
 
-    // Build an index from monitor position to monitor name so that
-    // HyprClient.monitor (an i32 index) can be resolved to a human-readable
-    // name such as "DP-1".
-    let monitor_names: Vec<String> = raw_monitors.iter().map(|m| m.name.clone()).collect();
+    // Build a map from monitor ID to monitor name so that
+    // HyprClient.monitor (an i32 monitor ID) can be resolved to a
+    // human-readable name such as "DP-1".
+    let monitor_map: HashMap<i32, String> =
+        raw_monitors.iter().map(|m| (m.id, m.name.clone())).collect();
 
     let monitors: Vec<Monitor> = raw_monitors
         .iter()
@@ -50,7 +52,7 @@ pub fn capture_session(
     let clients: Vec<SessionClient> = raw_clients
         .iter()
         .filter(|c| !config.filters.ignore_classes.contains(&c.class))
-        .map(|c| build_session_client(c, &monitor_names, process_info, config))
+        .map(|c| build_session_client(c, &monitor_map, process_info, config))
         .collect();
 
     Ok(Session {
@@ -64,14 +66,27 @@ pub fn capture_session(
 
 // ── Private helpers ────────────────────────────────────────────────────────
 
+/// Returns `true` when `cmdline` is a bare shell invocation (no arguments,
+/// no running command).  Used to suppress noisy hints like `/bin/zsh`.
+fn is_plain_shell(cmdline: &str) -> bool {
+    const PLAIN_SHELLS: &[&str] = &[
+        "zsh", "bash", "fish", "sh",
+        "/bin/zsh", "/usr/bin/zsh",
+        "/bin/bash", "/usr/bin/bash",
+        "/bin/fish", "/usr/bin/fish",
+        "/bin/sh", "/usr/bin/sh",
+    ];
+    PLAIN_SHELLS.contains(&cmdline)
+}
+
 fn build_session_client(
     client: &crate::hyprctl::HyprClient,
-    monitor_names: &[String],
+    monitor_map: &HashMap<i32, String>,
     process_info: &dyn ProcessInfoProvider,
     config: &Config,
 ) -> SessionClient {
-    let monitor_name = monitor_names
-        .get(client.monitor as usize)
+    let monitor_name = monitor_map
+        .get(&client.monitor)
         .cloned()
         .unwrap_or_else(|| format!("monitor-{}", client.monitor));
 
@@ -126,21 +141,23 @@ fn build_launch_info(
                 }
 
                 if capture_cmd {
-                    // Prefer a grandchild process (the command running inside the shell).
+                    // Prefer a grandchild process (the command running inside the shell),
+                    // but only when it is not itself a plain shell.
                     if let Ok(grandchildren) = process_info.get_children(shell.pid) {
-                        if let Some(cmd) =
-                            grandchildren.iter().find(|gc| !gc.cmdline.is_empty())
+                        if let Some(cmd) = grandchildren
+                            .iter()
+                            .find(|gc| !gc.cmdline.is_empty() && !is_plain_shell(&gc.cmdline))
                         {
                             hint = Some(cmd.cmdline.clone());
                         }
                     }
 
                     // Fall back to the shell's own cmdline if it is not a plain shell.
-                    if hint.is_none() && !shell.cmdline.is_empty() {
-                        const PLAIN_SHELLS: &[&str] = &["zsh", "bash", "fish", "sh"];
-                        if !PLAIN_SHELLS.contains(&shell.cmdline.as_str()) {
-                            hint = Some(shell.cmdline.clone());
-                        }
+                    if hint.is_none()
+                        && !shell.cmdline.is_empty()
+                        && !is_plain_shell(&shell.cmdline)
+                    {
+                        hint = Some(shell.cmdline.clone());
                     }
                 }
             }
@@ -248,7 +265,12 @@ mod tests {
     }
 
     fn make_monitor(name: &str) -> RawMonitor {
+        make_monitor_with_id(0, name)
+    }
+
+    fn make_monitor_with_id(id: i32, name: &str) -> RawMonitor {
         RawMonitor {
+            id,
             name: name.to_string(),
             width: 1920,
             height: 1080,
@@ -440,5 +462,106 @@ mod tests {
             capture_session("test", &hyprctl, &empty_process(), &config).expect("capture failed");
 
         assert_eq!(session.hyprland_version, "0.54.1");
+    }
+
+    // ── Task 1: hint must filter plain-shell grandchildren ───────────────
+
+    #[test]
+    fn test_capture_hint_filters_plain_shell_grandchild() {
+        const KITTY_PID: u32 = 5001;
+        const SHELL_PID: u32 = 5002;
+        const GC_PID: u32 = 5003;
+
+        let hyprctl = MockHyprctl {
+            clients: vec![make_hypr_client("kitty", KITTY_PID)],
+            monitors: vec![make_monitor("DP-1")],
+        };
+
+        let mut app_configs = HashMap::new();
+        app_configs.insert(
+            "kitty".to_string(),
+            AppConfig {
+                binary: None,
+                capture_cwd: Some(true),
+                capture_last_command: Some(true),
+                hint_template: None,
+            },
+        );
+
+        let config = Config {
+            general: GeneralConfig::default(),
+            filters: FilterConfig {
+                ignore_classes: vec![],
+            },
+            apps: app_configs,
+        };
+
+        let mut children: HashMap<u32, Vec<ChildProcess>> = HashMap::new();
+        // Shell child of kitty
+        children.insert(
+            KITTY_PID,
+            vec![ChildProcess {
+                pid: SHELL_PID,
+                cwd: PathBuf::from("/home/user"),
+                cmdline: "zsh".to_string(),
+            }],
+        );
+        // Grandchild is also a plain shell (e.g. nested /bin/zsh)
+        children.insert(
+            SHELL_PID,
+            vec![ChildProcess {
+                pid: GC_PID,
+                cwd: PathBuf::from("/home/user"),
+                cmdline: "/bin/zsh".to_string(),
+            }],
+        );
+
+        let process = MockProcess {
+            cwds: HashMap::new(),
+            children,
+        };
+
+        let session =
+            capture_session("test", &hyprctl, &process, &config).expect("capture failed");
+
+        assert_eq!(session.clients.len(), 1);
+        assert!(
+            session.clients[0].launch.hint.is_none(),
+            "hint must be None when grandchild is a plain shell like /bin/zsh"
+        );
+    }
+
+    // ── Task 2: monitor resolved by ID, not array index ─────────────────
+
+    #[test]
+    fn test_capture_resolves_monitor_by_id_not_index() {
+        // Array order: [DP-4 (id=1), DP-5 (id=0)]
+        // A client with monitor:0 should resolve to DP-5 (id=0), NOT DP-4 (index 0).
+        let mut client = make_hypr_client("kitty", 6001);
+        client.monitor = 0;
+
+        let hyprctl = MockHyprctl {
+            clients: vec![client],
+            monitors: vec![
+                make_monitor_with_id(1, "DP-4"),
+                make_monitor_with_id(0, "DP-5"),
+            ],
+        };
+
+        let config = Config {
+            general: GeneralConfig::default(),
+            filters: FilterConfig {
+                ignore_classes: vec![],
+            },
+            apps: HashMap::new(),
+        };
+
+        let session =
+            capture_session("test", &hyprctl, &empty_process(), &config).expect("capture failed");
+
+        assert_eq!(
+            session.clients[0].monitor, "DP-5",
+            "monitor must be resolved by ID (0 → DP-5), not by array index (0 → DP-4)"
+        );
     }
 }

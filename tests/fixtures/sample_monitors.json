@@ -1,4 +1,4 @@
 [
-  {"name": "DP-4", "width": 2560, "height": 1440, "transform": 0},
-  {"name": "DP-5", "width": 1920, "height": 1080, "transform": 3}
+  {"id": 0, "name": "DP-4", "width": 2560, "height": 1440, "transform": 0},
+  {"id": 1, "name": "DP-5", "width": 1920, "height": 1080, "transform": 3}
 ]

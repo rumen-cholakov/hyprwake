@@ -30,6 +30,7 @@ pub struct HyprClient {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct HyprMonitor {
+    pub id: i32,
     pub name: String,
     pub width: u32,
     pub height: u32,
