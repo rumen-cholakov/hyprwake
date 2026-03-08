@@ -25,7 +25,7 @@ cargo install --path .
 
 ```bash
 # Using your preferred AUR helper
-yay -S hyprflow
+yay -S hyprflow-git
 ```
 
 ## Usage
@@ -85,7 +85,12 @@ Sessions are stored as JSON files in `~/.local/share/hyprflow/sessions/`.
 
 - Hyprland 0.54+
 - Linux (uses `/proc` for terminal CWD detection)
+- Rust toolchain (for building from source)
+
+## Contributing
+
+Issues and pull requests are welcome. Please open an issue before submitting a large change so we can discuss the approach.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE)

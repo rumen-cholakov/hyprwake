@@ -6,11 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build --release              # Release binary (~2 MB)
-cargo test                         # All 34 tests (unit + integration)
-cargo test --lib                   # 29 unit tests only
+cargo test                         # All 39 tests (34 unit + 5 integration)
+cargo test --lib                   # 34 unit tests only
 cargo test --test cli_test         # 5 integration tests only
 cargo test <test_name>             # Single test by name
-cargo clippy --all-targets         # Lint (5 deprecation warnings are known/accepted)
+cargo clippy --all-targets         # Lint (known warnings: 5x assert_cmd::cargo_bin deprecated, 1x too-many-arguments)
 cargo install --path .             # Install to ~/.cargo/bin/
 ```
 
