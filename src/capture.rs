@@ -111,8 +111,15 @@ fn build_launch_info(
 
     if capture_cwd || capture_cmd {
         if let Ok(children) = process_info.get_children(client.pid) {
-            // The first child with a non-empty CWD is treated as the shell.
-            if let Some(shell) = children.iter().find(|c| !c.cwd.as_os_str().is_empty()) {
+            // Find the actual shell child, skipping helper processes like
+            // kitty's "kitten __atexit__" which has CWD=/home but is not the
+            // interactive shell.
+            const SKIP_COMMANDS: &[&str] = &["kitten", "/usr/bin/kitten"];
+            if let Some(shell) = children
+                .iter()
+                .filter(|c| !c.cwd.as_os_str().is_empty())
+                .find(|c| !SKIP_COMMANDS.iter().any(|s| c.cmdline.starts_with(s)))
+            {
                 if capture_cwd {
                     args.push("--directory".to_string());
                     args.push(shell.cwd.to_string_lossy().to_string());
