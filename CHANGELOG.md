@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Count-based duplicate detection on restore: skips already-running windows, restores only missing count
 - Autosave with rotation: `hyprflow autosave --now` captures and keeps last N sessions (configurable via `autosave_retain`)
 - Systemd timer management: `hyprflow autosave --install` / `--uninstall` for automated periodic saves
+- `--max-age` flag for restore: skip restore if session is older than specified duration (e.g., `24h`, `7d`)
+- `--on-login` flag for restore: prints `exec-once` line for Hyprland config
 
 ### Fixed
 

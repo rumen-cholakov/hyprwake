@@ -41,6 +41,8 @@ hyprflow save work         # saves as "work"
 hyprflow restore           # restores "latest"
 hyprflow restore work      # restores "work"
 hyprflow restore --dry-run # preview without executing
+hyprflow restore --max-age 24h  # skip if session older than 24h
+hyprflow restore --on-login     # print exec-once line for hyprland.conf
 
 # Manage sessions
 hyprflow list              # list all saved sessions
@@ -125,6 +127,23 @@ Configure retention in `config.toml`:
 [general]
 autosave_retain = 5   # keep last 5 autosave sessions (default)
 ```
+
+### Restore on Login
+
+To automatically restore your session when Hyprland starts:
+
+```bash
+hyprflow restore --on-login
+```
+
+This prints an `exec-once` line to add to `~/.config/hypr/hyprland.conf`:
+
+```
+exec-once = hyprflow restore --max-age 24h
+```
+
+The `--max-age` flag prevents restoring stale sessions. Accepted formats:
+`30m` (minutes), `24h` (hours), `7d` (days).
 
 ### Sessions storage
 
