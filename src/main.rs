@@ -44,6 +44,18 @@ enum Commands {
     },
     /// Show config info
     Config,
+    /// Manage autosave (status, run, install/uninstall timer)
+    Autosave {
+        /// Run autosave now (capture + rotate)
+        #[arg(long)]
+        now: bool,
+        /// Install systemd timer
+        #[arg(long)]
+        install: bool,
+        /// Uninstall systemd timer
+        #[arg(long)]
+        uninstall: bool,
+    },
 }
 
 fn main() {
@@ -205,6 +217,102 @@ fn main() {
                 }
                 Ok(_) => println!("No Brave profiles detected."),
                 Err(e) => println!("Could not read Brave profiles: {e}"),
+            }
+        }
+
+        Commands::Autosave { now, install, uninstall } => {
+            let systemd_dir = hyprflow::autosave::systemd_user_dir();
+
+            if install {
+                match hyprflow::autosave::install(&systemd_dir) {
+                    Ok((service_path, timer_path)) => {
+                        println!("Created:");
+                        println!("  {}", service_path.display());
+                        println!("  {}", timer_path.display());
+                        println!();
+                        println!("To enable and start:");
+                        println!("  systemctl --user enable --now hyprflow-autosave.timer");
+                        println!();
+                        println!("To check status:");
+                        println!("  systemctl --user status hyprflow-autosave.timer");
+                        println!("  journalctl --user -u hyprflow-autosave.service");
+                    }
+                    Err(e) => {
+                        eprintln!("Error installing autosave timer: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            } else if uninstall {
+                match hyprflow::autosave::uninstall(&systemd_dir) {
+                    Ok(()) => println!("Autosave timer removed."),
+                    Err(e) => {
+                        eprintln!("Error uninstalling autosave timer: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            } else if now {
+                let hyprctl = RealHyprctl;
+                let process_info = RealProcessInfo;
+                let name = hyprflow::session::autosave_name_now();
+
+                match capture_session(&name, &hyprctl, &process_info, &config) {
+                    Ok(session) => {
+                        let client_count = session.clients.len();
+                        if let Err(e) = save_session(&session, &sessions_dir) {
+                            eprintln!("Error saving autosave session: {}", e);
+                            std::process::exit(1);
+                        }
+
+                        let retain = config.general.autosave_retain;
+                        let pruned = hyprflow::session::rotate_autosaves(&sessions_dir, retain)
+                            .unwrap_or(0);
+
+                        let total = hyprflow::session::list_autosave_sessions(&sessions_dir)
+                            .map(|s| s.len())
+                            .unwrap_or(0);
+
+                        println!(
+                            "Autosaved '{}' ({} windows). Retained {}, pruned {}.",
+                            name, client_count, total, pruned
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("Error capturing session: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                // Status mode (no flags)
+                let installed = hyprflow::autosave::is_installed(&systemd_dir);
+                let active = hyprflow::autosave::is_active();
+
+                if !installed {
+                    println!("Autosave is not configured.");
+                    println!("Run 'hyprflow autosave --install' to set up the systemd timer.");
+                } else if !active {
+                    println!("Autosave timer is installed but not active.");
+                    println!("  systemctl --user enable --now hyprflow-autosave.timer");
+                } else {
+                    println!("Autosave is active (every 10min).");
+                    match hyprflow::session::list_autosave_sessions(&sessions_dir) {
+                        Ok(sessions) if !sessions.is_empty() => {
+                            let latest = &sessions[0];
+                            println!(
+                                "Last: {} — {} windows",
+                                latest.created_at.format("%Y-%m-%d %H:%M:%S"),
+                                latest.client_count
+                            );
+                            println!(
+                                "Retained: {} sessions (oldest: {})",
+                                sessions.len(),
+                                sessions.last().unwrap().name
+                            );
+                        }
+                        Ok(_) => println!("No autosave sessions yet."),
+                        Err(e) => println!("Could not list sessions: {e}"),
+                    }
+                    println!("To disable: hyprflow autosave --uninstall");
+                }
             }
         }
     }
