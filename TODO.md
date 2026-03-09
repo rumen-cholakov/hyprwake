@@ -12,6 +12,7 @@
 
 ## v0.3
 
+- [ ] Autostart apps on restore: config-driven launch of apps that should always run, even if not in the saved session (e.g., `autostart = true` + `default_workspace = 2` for Obsidian)
 - [ ] Custom hooks per app (pre-save, post-restore shell commands)
 - [ ] Dwindle layout tree preservation (split ratios)
 - [ ] Graceful fallback when monitor configuration changes between save and restore
