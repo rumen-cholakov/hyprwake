@@ -5,3 +5,4 @@ pub mod process;
 pub mod capture;
 pub mod restore;
 pub mod brave;
+pub mod autosave;
