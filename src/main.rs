@@ -223,6 +223,12 @@ fn main() {
         }
 
         Commands::Autosave { now, install, uninstall } => {
+            let flag_count = [now, install, uninstall].iter().filter(|&&f| f).count();
+            if flag_count > 1 {
+                eprintln!("Error: only one of --now, --install, --uninstall may be specified at a time.");
+                std::process::exit(1);
+            }
+
             let systemd_dir = hyprflow::autosave::systemd_user_dir();
 
             if install {
@@ -266,16 +272,16 @@ fn main() {
                         }
 
                         let retain = config.general.autosave_retain;
-                        let pruned = hyprflow::session::rotate_autosaves(&sessions_dir, retain)
-                            .unwrap_or(0);
-
-                        let total = hyprflow::session::list_autosave_sessions(&sessions_dir)
+                        let total_before = hyprflow::session::list_autosave_sessions(&sessions_dir)
                             .map(|s| s.len())
                             .unwrap_or(0);
+                        let pruned = hyprflow::session::rotate_autosaves(&sessions_dir, retain)
+                            .unwrap_or(0);
+                        let retained = total_before.saturating_sub(pruned);
 
                         println!(
                             "Autosaved '{}' ({} windows). Retained {}, pruned {}.",
-                            name, client_count, total, pruned
+                            name, client_count, retained, pruned
                         );
                     }
                     Err(e) => {

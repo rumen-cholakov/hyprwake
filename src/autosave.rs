@@ -38,6 +38,11 @@ fn timer_content() -> String {
 
 pub fn install(systemd_dir: &Path) -> std::io::Result<(PathBuf, PathBuf)> {
     std::fs::create_dir_all(systemd_dir)?;
+
+    if which::which("hyprflow").is_err() {
+        eprintln!("Warning: hyprflow not found in PATH. Edit the generated .service file with the full path.");
+    }
+
     let service_path = systemd_dir.join(SERVICE_NAME);
     let timer_path = systemd_dir.join(TIMER_NAME);
     std::fs::write(&service_path, service_content())?;
@@ -46,9 +51,15 @@ pub fn install(systemd_dir: &Path) -> std::io::Result<(PathBuf, PathBuf)> {
 }
 
 pub fn uninstall(systemd_dir: &Path) -> std::io::Result<()> {
-    let _ = std::process::Command::new("systemctl")
+    let result = std::process::Command::new("systemctl")
         .args(["--user", "disable", "--now", "hyprflow-autosave.timer"])
         .output();
+    if let Ok(output) = result {
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("Warning: systemctl disable failed: {}", stderr.trim());
+        }
+    }
 
     let service_path = systemd_dir.join(SERVICE_NAME);
     let timer_path = systemd_dir.join(TIMER_NAME);

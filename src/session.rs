@@ -149,6 +149,9 @@ pub fn list_autosave_sessions(sessions_dir: &Path) -> Result<Vec<SessionSummary>
 /// Deletes the oldest autosave sessions, keeping only the `retain` newest.
 /// Returns the count of sessions deleted. Non-autosave sessions are untouched.
 pub fn rotate_autosaves(sessions_dir: &Path, retain: usize) -> Result<usize, SessionError> {
+    if retain == 0 {
+        return Ok(0);
+    }
     let autosaves = list_autosave_sessions(sessions_dir)?;
     let mut pruned = 0;
     if autosaves.len() > retain {
@@ -435,6 +438,16 @@ mod tests {
         save_session(&make_test_session("autosave-20260309T100000"), dir.path()).unwrap();
 
         let pruned = rotate_autosaves(dir.path(), 5).unwrap();
+        assert_eq!(pruned, 0);
+        assert_eq!(list_autosave_sessions(dir.path()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_rotate_autosaves_retain_zero_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        save_session(&make_test_session("autosave-20260309T100000"), dir.path()).unwrap();
+
+        let pruned = rotate_autosaves(dir.path(), 0).unwrap();
         assert_eq!(pruned, 0);
         assert_eq!(list_autosave_sessions(dir.path()).unwrap().len(), 1);
     }
