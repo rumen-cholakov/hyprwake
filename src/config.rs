@@ -20,6 +20,8 @@ pub struct GeneralConfig {
     pub restore_delay_ms: u64,
     #[serde(default = "default_detect_timeout")]
     pub window_detect_timeout_ms: u64,
+    #[serde(default = "default_autosave_retain")]
+    pub autosave_retain: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +52,10 @@ fn default_detect_timeout() -> u64 {
     5000
 }
 
+fn default_autosave_retain() -> usize {
+    5
+}
+
 fn default_ignore_classes() -> Vec<String> {
     vec![
         "waybar",
@@ -70,6 +76,7 @@ impl Default for GeneralConfig {
             default_session: default_session_name(),
             restore_delay_ms: default_restore_delay(),
             window_detect_timeout_ms: default_detect_timeout(),
+            autosave_retain: default_autosave_retain(),
         }
     }
 }
@@ -172,6 +179,22 @@ hint_template = "{cwd}"
             "ignore_classes should contain 'wofi' by default"
         );
         assert!(config.apps.is_empty());
+    }
+
+    #[test]
+    fn test_config_autosave_retain_default() {
+        let config = Config::default();
+        assert_eq!(config.general.autosave_retain, 5);
+    }
+
+    #[test]
+    fn test_config_autosave_retain_from_toml() {
+        let toml_str = r#"
+[general]
+autosave_retain = 10
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.general.autosave_retain, 10);
     }
 
     #[test]
