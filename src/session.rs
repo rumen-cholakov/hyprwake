@@ -4,12 +4,20 @@ use serde::{Deserialize, Serialize};
 // === Hyprflow session structs (what we save to disk) ===
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BraveProfile {
+    pub directory: String, // "Default", "Profile 1", etc.
+    pub name: String,      // "Credifit", "LinkPJ", etc.
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub name: String,
     pub created_at: DateTime<Utc>,
     pub hyprland_version: String,
     pub monitors: Vec<Monitor>,
     pub clients: Vec<SessionClient>,
+    #[serde(default)]
+    pub brave_profiles: Vec<BraveProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +193,7 @@ mod tests {
                     hint: None,
                 },
             }],
+            brave_profiles: vec![],
         };
 
         let json = serde_json::to_string(&session).expect("serialization failed");
@@ -239,7 +248,59 @@ mod tests {
                     hint: None,
                 },
             }],
+            brave_profiles: vec![],
         }
+    }
+
+    #[test]
+    fn test_session_roundtrip_with_brave_profiles() {
+        let session = Session {
+            name: "brave-test".to_string(),
+            created_at: DateTime::parse_from_rfc3339("2026-03-08T10:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            hyprland_version: "0.54.1".to_string(),
+            monitors: vec![],
+            clients: vec![],
+            brave_profiles: vec![
+                BraveProfile {
+                    directory: "Default".to_string(),
+                    name: "Credifit".to_string(),
+                },
+                BraveProfile {
+                    directory: "Profile 1".to_string(),
+                    name: "LinkPJ".to_string(),
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&session).expect("serialization failed");
+        let restored: Session = serde_json::from_str(&json).expect("deserialization failed");
+
+        assert_eq!(restored.brave_profiles.len(), 2);
+        assert_eq!(restored.brave_profiles[0].directory, "Default");
+        assert_eq!(restored.brave_profiles[0].name, "Credifit");
+        assert_eq!(restored.brave_profiles[1].directory, "Profile 1");
+        assert_eq!(restored.brave_profiles[1].name, "LinkPJ");
+    }
+
+    #[test]
+    fn test_session_backward_compat_no_brave_profiles() {
+        // A session JSON without the brave_profiles field (as saved by older versions).
+        let json = r#"{
+            "name": "old-session",
+            "created_at": "2026-03-08T10:00:00Z",
+            "hyprland_version": "0.54.0",
+            "monitors": [],
+            "clients": []
+        }"#;
+
+        let session: Session = serde_json::from_str(json).expect("deserialization must succeed");
+        assert_eq!(
+            session.brave_profiles.len(),
+            0,
+            "missing brave_profiles field should default to empty vec"
+        );
     }
 
     #[test]

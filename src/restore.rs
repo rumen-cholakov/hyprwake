@@ -55,6 +55,10 @@ pub fn restore_session(
         }
     }
 
+    // Detect if profile-based Brave restore applies.
+    let has_brave_profiles = !session.brave_profiles.is_empty()
+        && config.apps.contains_key("brave-browser");
+
     // Group by workspace (BTreeMap gives us sorted workspace order for free).
     let mut by_workspace: BTreeMap<i32, Vec<&SessionClient>> = BTreeMap::new();
     for client in &session.clients {
@@ -66,6 +70,11 @@ pub fn restore_session(
         clients.sort_by(|a, b| a.at[1].cmp(&b.at[1]).then(a.at[0].cmp(&b.at[0])));
 
         for client in clients {
+            // Skip brave-browser windows when profiles are available (handled after main loop).
+            if has_brave_profiles && client.class == "brave-browser" {
+                continue;
+            }
+
             if dry_run {
                 let cmds = build_dispatch_commands(client);
                 report.details.push(format!(
@@ -118,6 +127,112 @@ pub fn restore_session(
                     let msg = format!("FAIL: {} — {e}", client.class);
                     report.details.push(msg);
                     report.failed += 1;
+                }
+            }
+        }
+    }
+
+    // Restore Brave profiles (one window per profile).
+    if has_brave_profiles {
+        let brave_config = config.apps.get("brave-browser");
+        let binary = brave_config
+            .and_then(|c| c.binary.clone())
+            .unwrap_or_else(|| "brave".to_string());
+        let default_ws = brave_config
+            .and_then(|c| c.default_workspace)
+            .unwrap_or(1);
+        let profile_ws = brave_config
+            .and_then(|c| c.profile_workspaces.as_ref());
+
+        if !dry_run && which::which(&binary).is_err() {
+            let msg = format!("SKIP: binary '{}' not found for Brave profiles", binary);
+            report.details.push(msg);
+            report.skipped += session.brave_profiles.len();
+        } else {
+            for profile in &session.brave_profiles {
+                let ws = profile_ws
+                    .and_then(|m| m.get(&profile.directory))
+                    .copied()
+                    .unwrap_or(default_ws);
+
+                if dry_run {
+                    report.details.push(format!(
+                        "[dry-run] brave profile \"{}\" ({}) → ws={}",
+                        profile.name, profile.directory, ws
+                    ));
+                    report.details.push(format!(
+                        "  {} --profile-directory={}", binary, profile.directory
+                    ));
+                    report.details.push(format!(
+                        "  hyprctl dispatch movetoworkspacesilent {},address:0xNEW", ws
+                    ));
+                    report.restored += 1;
+                    continue;
+                }
+
+                // Snapshot existing addresses BEFORE spawning (avoid race condition).
+                let before: HashSet<String> = hyprctl
+                    .get_clients()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|c| c.address)
+                    .collect();
+
+                // Launch brave with profile directory.
+                let spawn_result = Command::new(&binary)
+                    .arg(format!("--profile-directory={}", profile.directory))
+                    .spawn();
+
+                match spawn_result {
+                    Ok(_) => {
+                        let timeout = Duration::from_millis(config.general.window_detect_timeout_ms);
+                        let poll_interval = Duration::from_millis(100);
+                        let start = Instant::now();
+
+                        let new_addr = loop {
+                            if start.elapsed() > timeout {
+                                report.details.push(format!(
+                                    "FAIL: timeout waiting for brave profile \"{}\"", profile.name
+                                ));
+                                report.failed += 1;
+                                break None;
+                            }
+                            thread::sleep(poll_interval);
+
+                            if let Ok(current) = hyprctl.get_clients() {
+                                if let Some(w) = current
+                                    .into_iter()
+                                    .find(|c| !before.contains(&c.address) && c.class == "brave-browser")
+                                {
+                                    break Some(w.address);
+                                }
+                            }
+                        };
+
+                        if let Some(addr) = new_addr {
+                            // Move to target workspace (no pixel positioning for Brave).
+                            let _ = hyprctl.dispatch(&format!(
+                                "movetoworkspacesilent {},address:{}", ws, addr
+                            ));
+
+                            if verbose {
+                                report.details.push(format!(
+                                    "OK: brave profile \"{}\" ({}) → ws={}",
+                                    profile.name, profile.directory, ws
+                                ));
+                            }
+                            report.restored += 1;
+                        }
+
+                        // Throttle between launches.
+                        thread::sleep(Duration::from_millis(config.general.restore_delay_ms));
+                    }
+                    Err(e) => {
+                        report.details.push(format!(
+                            "FAIL: brave profile \"{}\" — spawn error: {}", profile.name, e
+                        ));
+                        report.failed += 1;
+                    }
                 }
             }
         }
@@ -267,8 +382,9 @@ pub fn build_dispatch_commands(client: &SessionClient) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{AppConfig, FilterConfig, GeneralConfig};
     use crate::hyprctl::{HyprClient, HyprMonitor};
-    use crate::session::{LaunchInfo, Session, SessionClient};
+    use crate::session::{BraveProfile, LaunchInfo, Session, SessionClient};
     use chrono::Utc;
     use std::cell::RefCell;
 
@@ -310,6 +426,7 @@ mod tests {
             hyprland_version: "0.54.0".to_string(),
             monitors: vec![],
             clients,
+            brave_profiles: vec![],
         }
     }
 
@@ -755,5 +872,137 @@ mod tests {
 
         // No dispatches should have been sent.
         assert!(mock.dispatches().is_empty());
+    }
+
+    // ── Test: restore brave by profile in dry-run mode ───────────────────
+
+    #[test]
+    fn test_restore_brave_by_profile_dry_run() {
+        let session = Session {
+            name: "test".to_string(),
+            created_at: Utc::now(),
+            hyprland_version: "0.54.1".to_string(),
+            monitors: vec![],
+            clients: vec![
+                make_client("brave-browser", 1, [0, 0], [800, 600], false, 0, "brave", vec![], None),
+                make_client("brave-browser", 8, [0, 0], [800, 600], false, 0, "brave", vec![], None),
+                make_client("kitty", 4, [0, 0], [800, 600], false, 0, "kitty", vec![], None),
+            ],
+            brave_profiles: vec![
+                BraveProfile { directory: "Default".to_string(), name: "Credifit".to_string() },
+                BraveProfile { directory: "Profile 1".to_string(), name: "LinkPJ".to_string() },
+            ],
+        };
+
+        let mut apps = HashMap::new();
+        apps.insert("brave-browser".to_string(), AppConfig {
+            binary: Some("brave".to_string()),
+            capture_cwd: None,
+            capture_last_command: None,
+            hint_template: None,
+            profile_workspaces: Some(HashMap::from([
+                ("Default".to_string(), 1),
+                ("Profile 1".to_string(), 6),
+            ])),
+            default_workspace: Some(1),
+        });
+
+        let config = Config {
+            general: GeneralConfig::default(),
+            filters: FilterConfig::default(),
+            apps,
+        };
+
+        let mock = MockHyprctl::new(vec![]);
+        let report = restore_session(&session, &mock, &config, true, true).unwrap();
+
+        // 2 profiles restored + 1 kitty = 3 restored
+        assert_eq!(report.restored, 3, "should restore 2 profiles + 1 kitty; got details: {:?}", report.details);
+
+        // Brave individual windows should NOT appear in details (they were skipped)
+        let brave_individual: Vec<_> = report.details.iter()
+            .filter(|d| d.contains("[dry-run] ws=") && d.contains("brave"))
+            .collect();
+        assert!(brave_individual.is_empty(), "individual brave windows should be skipped; got: {:?}", brave_individual);
+
+        // Profile entries should appear
+        assert!(report.details.iter().any(|d| d.contains("Credifit")), "should have Credifit profile; got: {:?}", report.details);
+        assert!(report.details.iter().any(|d| d.contains("LinkPJ")), "should have LinkPJ profile; got: {:?}", report.details);
+
+        // Kitty should still be present
+        assert!(report.details.iter().any(|d| d.contains("kitty")), "kitty should be restored normally; got: {:?}", report.details);
+    }
+
+    // ── Test: unmapped profile uses default_workspace fallback ──────────
+
+    #[test]
+    fn test_restore_brave_profile_uses_default_workspace() {
+        let session = Session {
+            name: "test".to_string(),
+            created_at: Utc::now(),
+            hyprland_version: "0.54.1".to_string(),
+            monitors: vec![],
+            clients: vec![],
+            brave_profiles: vec![
+                BraveProfile {
+                    directory: "Profile 9".to_string(),
+                    name: "Unmapped".to_string(),
+                },
+            ],
+        };
+
+        let mut apps = HashMap::new();
+        apps.insert("brave-browser".to_string(), AppConfig {
+            binary: Some("brave".to_string()),
+            capture_cwd: None,
+            capture_last_command: None,
+            hint_template: None,
+            profile_workspaces: Some(HashMap::from([
+                ("Default".to_string(), 1),
+            ])),
+            default_workspace: Some(3),
+        });
+
+        let config = Config {
+            general: GeneralConfig::default(),
+            filters: FilterConfig { ignore_classes: vec![] },
+            apps,
+        };
+
+        let mock = MockHyprctl::new(vec![]);
+        let report = restore_session(&session, &mock, &config, true, true).unwrap();
+
+        assert_eq!(report.restored, 1);
+        // Should use default_workspace=3 since "Profile 9" has no mapping
+        assert!(
+            report.details.iter().any(|d| d.contains("ws=3")),
+            "unmapped profile should use default_workspace=3; got: {:?}",
+            report.details
+        );
+    }
+
+    // ── Test: without profiles, brave windows restore individually ───────
+
+    #[test]
+    fn test_restore_brave_without_profiles_falls_back() {
+        // Session WITHOUT brave_profiles — should restore brave windows normally
+        let session = Session {
+            name: "test".to_string(),
+            created_at: Utc::now(),
+            hyprland_version: "0.54.1".to_string(),
+            monitors: vec![],
+            clients: vec![
+                make_client("brave-browser", 1, [0, 0], [800, 600], false, 0, "brave", vec![], None),
+            ],
+            brave_profiles: vec![],  // no profiles
+        };
+
+        let config = Config::default();
+        let mock = MockHyprctl::new(vec![]);
+        let report = restore_session(&session, &mock, &config, true, true).unwrap();
+
+        // Without profiles, brave windows are restored individually
+        assert_eq!(report.restored, 1);
+        assert!(report.details.iter().any(|d| d.contains("[dry-run]") && d.contains("brave")));
     }
 }

@@ -34,6 +34,8 @@ pub struct AppConfig {
     pub capture_cwd: Option<bool>,
     pub capture_last_command: Option<bool>,
     pub hint_template: Option<String>,
+    pub profile_workspaces: Option<HashMap<String, i32>>,
+    pub default_workspace: Option<i32>,
 }
 
 fn default_session_name() -> String {
@@ -170,5 +172,21 @@ hint_template = "{cwd}"
             "ignore_classes should contain 'wofi' by default"
         );
         assert!(config.apps.is_empty());
+    }
+
+    #[test]
+    fn test_config_brave_profile_workspaces() {
+        let toml_str = r#"
+[apps.brave-browser]
+binary = "brave"
+default_workspace = 1
+profile_workspaces = { "Default" = 1, "Profile 1" = 6 }
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let brave = config.apps.get("brave-browser").unwrap();
+        assert_eq!(brave.default_workspace, Some(1));
+        let pw = brave.profile_workspaces.as_ref().unwrap();
+        assert_eq!(pw.get("Default"), Some(&1));
+        assert_eq!(pw.get("Profile 1"), Some(&6));
     }
 }
