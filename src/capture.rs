@@ -56,10 +56,15 @@ pub fn capture_session(
         .collect();
 
     let brave_profiles = if clients.iter().any(|c| c.class == "brave-browser") {
-        crate::brave::read_profiles().unwrap_or_else(|e| {
+        let all_profiles = crate::brave::read_profiles().unwrap_or_else(|e| {
             eprintln!("Warning: could not read Brave profiles: {e}");
             vec![]
-        })
+        });
+        let profile_ws = config
+            .apps
+            .get("brave-browser")
+            .and_then(|c| c.profile_workspaces.as_ref());
+        crate::brave::filter_profiles_by_config(all_profiles, profile_ws)
     } else {
         vec![]
     };

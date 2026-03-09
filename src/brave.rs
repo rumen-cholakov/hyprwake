@@ -1,5 +1,6 @@
 use crate::session::BraveProfile;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
@@ -54,6 +55,21 @@ pub fn parse_profiles_from_local_state(
     Ok(profiles)
 }
 
+/// Filter profiles to only include those with a workspace mapping.
+/// When `profile_workspaces` is `None`, all profiles are kept (backward compat).
+pub fn filter_profiles_by_config(
+    profiles: Vec<BraveProfile>,
+    profile_workspaces: Option<&HashMap<String, i32>>,
+) -> Vec<BraveProfile> {
+    match profile_workspaces {
+        Some(mappings) => profiles
+            .into_iter()
+            .filter(|p| mappings.contains_key(&p.directory))
+            .collect(),
+        None => profiles,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +115,48 @@ mod tests {
         let json = r#"{"other": "data"}"#;
         let profiles = parse_profiles_from_local_state(json).unwrap();
         assert!(profiles.is_empty());
+    }
+
+    #[test]
+    fn test_filter_profiles_by_config_with_mappings() {
+        let profiles = vec![
+            BraveProfile {
+                directory: "Default".to_string(),
+                name: "Credifit".to_string(),
+            },
+            BraveProfile {
+                directory: "Profile 1".to_string(),
+                name: "LinkPJ".to_string(),
+            },
+            BraveProfile {
+                directory: "Profile 2".to_string(),
+                name: "ABRH".to_string(),
+            },
+        ];
+        let mappings = HashMap::from([
+            ("Default".to_string(), 1),
+            ("Profile 1".to_string(), 6),
+        ]);
+        let filtered = filter_profiles_by_config(profiles, Some(&mappings));
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().any(|p| p.directory == "Default"));
+        assert!(filtered.iter().any(|p| p.directory == "Profile 1"));
+        assert!(!filtered.iter().any(|p| p.directory == "Profile 2"));
+    }
+
+    #[test]
+    fn test_filter_profiles_by_config_without_mappings_keeps_all() {
+        let profiles = vec![
+            BraveProfile {
+                directory: "Default".to_string(),
+                name: "Credifit".to_string(),
+            },
+            BraveProfile {
+                directory: "Profile 1".to_string(),
+                name: "LinkPJ".to_string(),
+            },
+        ];
+        let filtered = filter_profiles_by_config(profiles, None);
+        assert_eq!(filtered.len(), 2);
     }
 }

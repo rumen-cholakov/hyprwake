@@ -71,6 +71,25 @@ hint_template = "# Last: {last_command}\n# Dir: {cwd}"
 binary = "brave"
 ```
 
+### Brave Profile Support
+
+Hyprflow captures and restores Brave browser profiles individually. Since Brave
+runs all windows in a single process, profiles are detected from Brave's
+`Local State` file rather than from window processes.
+
+Only profiles listed in `profile_workspaces` are captured and restored. Use
+`hyprflow config` to see detected profiles and their mapping status.
+
+```toml
+[apps.brave-browser]
+binary = "brave"
+default_workspace = 1
+profile_workspaces = { "Default" = 1, "Profile 1" = 6, "Profile 2" = 7 }
+```
+
+On restore, one Brave window is launched per mapped profile and moved to its
+configured workspace. Profiles not in `profile_workspaces` are skipped.
+
 ### Sessions storage
 
 Sessions are stored as JSON files in `~/.local/share/hyprflow/sessions/`.

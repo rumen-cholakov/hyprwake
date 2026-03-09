@@ -174,6 +174,38 @@ fn main() {
                     );
                 }
             }
+
+            // Show Brave profile mappings
+            println!();
+            match hyprflow::brave::read_profiles() {
+                Ok(profiles) if !profiles.is_empty() => {
+                    println!("Brave profiles detected:");
+                    let profile_ws = config
+                        .apps
+                        .get("brave-browser")
+                        .and_then(|c| c.profile_workspaces.as_ref());
+                    for profile in &profiles {
+                        if let Some(ws) = profile_ws.and_then(|m| m.get(&profile.directory)) {
+                            println!(
+                                "  ✓ {} ({}) → ws={}",
+                                profile.directory, profile.name, ws
+                            );
+                        } else {
+                            println!(
+                                "  · {} ({}) — not mapped, will be skipped",
+                                profile.directory, profile.name
+                            );
+                        }
+                    }
+                    if profile_ws.is_none() {
+                        println!(
+                            "  (no profile_workspaces configured — all profiles will be captured)"
+                        );
+                    }
+                }
+                Ok(_) => println!("No Brave profiles detected."),
+                Err(e) => println!("Could not read Brave profiles: {e}"),
+            }
         }
     }
 }
