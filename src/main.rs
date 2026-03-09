@@ -34,6 +34,12 @@ enum Commands {
         /// Preview without executing
         #[arg(short, long)]
         dry_run: bool,
+        /// Skip restore if session is older than duration (e.g., 24h, 7d, 30m)
+        #[arg(long)]
+        max_age: Option<String>,
+        /// Print exec-once line for Hyprland config
+        #[arg(long)]
+        on_login: bool,
     },
     /// List saved sessions
     List,
@@ -103,11 +109,42 @@ fn main() {
             }
         }
 
-        Commands::Restore { name, dry_run } => {
+        Commands::Restore { name, dry_run, max_age, on_login } => {
+            if on_login {
+                println!("Add this line to ~/.config/hypr/hyprland.conf:");
+                println!();
+                println!("  exec-once = hyprflow restore --max-age 24h");
+                println!();
+                println!("This will restore your last saved session on login.");
+                println!("Sessions older than 24h will be skipped.");
+                return;
+            }
+
             let name = name.unwrap_or_else(|| config.general.default_session.clone());
 
             match load_session(&name, &sessions_dir) {
                 Ok(session) => {
+                    if let Some(ref age_str) = max_age {
+                        match hyprflow::session::parse_max_age(age_str) {
+                            Ok(max_duration) => {
+                                let age = chrono::Utc::now() - session.created_at;
+                                if age > max_duration {
+                                    println!(
+                                        "Session '{}' is too old (created {}).",
+                                        name,
+                                        session.created_at.format("%Y-%m-%d %H:%M")
+                                    );
+                                    println!("Skipping restore (max age: {}).", age_str);
+                                    return;
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Error: {}", e);
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+
                     let hyprctl = RealHyprctl;
                     match restore_session(&session, &hyprctl, &config, dry_run, cli.verbose) {
                         Ok(report) => {
