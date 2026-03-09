@@ -6,7 +6,7 @@
 - [x] Fix: correct monitor index to name mapping when hyprctl monitor order differs from client monitor index
 - [x] Fix: count-based duplicate detection on restore (skip already-running windows)
 - [x] Brave browser profile support (capture from Local State, restore with `--profile-directory`, configurable workspace mapping)
-- [ ] Autosave daemon via systemd timer
+- [x] Autosave with rotation via systemd timer
 - [ ] Restore on login via `exec-once` in Hyprland config
 - [ ] CI/CD pipeline: auto-publish to AUR on new release tag on main
 

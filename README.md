@@ -12,6 +12,7 @@ When you reboot or after a power loss, hyprflow restores your applications to th
 - **Smart filtering** — ignores transient windows (Waybar, Wofi, popups)
 - **Dry run** — preview restore without executing
 - **Brave profile support** — restores each profile to its configured workspace
+- **Autosave** — periodic saves with automatic rotation via systemd timer
 - **Configurable** — TOML config with per-app settings
 
 ## Installation
@@ -47,6 +48,12 @@ hyprflow delete work       # delete a session
 
 # Show config
 hyprflow config
+
+# Autosave
+hyprflow autosave              # check timer status
+hyprflow autosave --now        # save now + rotate old
+hyprflow autosave --install    # set up systemd timer
+hyprflow autosave --uninstall  # remove systemd timer
 ```
 
 ## Configuration
@@ -58,6 +65,7 @@ Config file: `~/.config/hyprflow/config.toml`
 default_session = "latest"
 restore_delay_ms = 500
 window_detect_timeout_ms = 5000
+autosave_retain = 5
 
 [filters]
 ignore_classes = ["waybar", "wofi", "mako", "polkit", "nm-applet", "xdg-desktop-portal"]
@@ -90,6 +98,33 @@ profile_workspaces = { "Default" = 1, "Profile 1" = 6, "Profile 2" = 7 }
 
 On restore, one Brave window is launched per mapped profile and moved to its
 configured workspace. Profiles not in `profile_workspaces` are skipped.
+
+### Autosave
+
+Hyprflow can automatically save sessions at regular intervals using a systemd
+timer. Autosave sessions are named with timestamps (`autosave-20260309T143000`)
+and automatically rotated, keeping only the last N saves.
+
+```bash
+# Check autosave status
+hyprflow autosave
+
+# Run autosave manually (capture + rotate)
+hyprflow autosave --now
+
+# Install systemd timer (saves every 10 minutes)
+hyprflow autosave --install
+
+# Remove systemd timer
+hyprflow autosave --uninstall
+```
+
+Configure retention in `config.toml`:
+
+```toml
+[general]
+autosave_retain = 5   # keep last 5 autosave sessions (default)
+```
 
 ### Sessions storage
 

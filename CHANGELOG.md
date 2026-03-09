@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Configurable workspace mapping per Brave profile via `profile_workspaces` in config.toml
 - `hyprflow config` now displays detected Brave profiles with mapping status
 - Count-based duplicate detection on restore: skips already-running windows, restores only missing count
+- Autosave with rotation: `hyprflow autosave --now` captures and keeps last N sessions (configurable via `autosave_retain`)
+- Systemd timer management: `hyprflow autosave --install` / `--uninstall` for automated periodic saves
 
 ### Fixed
 
