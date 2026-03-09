@@ -2,12 +2,13 @@
 
 ## v0.2
 
-- [ ] Fix: filter `/bin/zsh` and other bare shells from last-command hint (show nothing for idle shells)
-- [ ] Fix: correct monitor index to name mapping when hyprctl monitor order differs from client monitor index
-- [ ] Fix: warn user when restoring would create duplicate windows
+- [x] Fix: filter `/bin/zsh` and other bare shells from last-command hint (show nothing for idle shells)
+- [x] Fix: correct monitor index to name mapping when hyprctl monitor order differs from client monitor index
+- [x] Fix: count-based duplicate detection on restore (skip already-running windows)
+- [x] Brave browser profile support (capture from Local State, restore with `--profile-directory`, configurable workspace mapping)
 - [ ] Autosave daemon via systemd timer
 - [ ] Restore on login via `exec-once` in Hyprland config
-- [ ] Brave browser profile support (`--profile-directory` flag based on saved profile)
+- [ ] CI/CD pipeline: auto-publish to AUR on new release tag on main
 
 ## v0.3
 
