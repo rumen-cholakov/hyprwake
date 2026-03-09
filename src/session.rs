@@ -126,6 +126,40 @@ pub fn session_exists(name: &str, sessions_dir: &Path) -> bool {
     sessions_dir.join(format!("{name}.json")).exists()
 }
 
+// === Autosave helpers ===
+
+pub const AUTOSAVE_PREFIX: &str = "autosave-";
+
+pub fn autosave_name_now() -> String {
+    let now = Utc::now();
+    format!("autosave-{}", now.format("%Y%m%dT%H%M%S"))
+}
+
+/// Returns autosave sessions only (name starts with `AUTOSAVE_PREFIX`),
+/// sorted by name descending. The timestamp format `YYYYMMDDTHHMMSS` sorts
+/// lexicographically, so newest autosave is always first.
+pub fn list_autosave_sessions(sessions_dir: &Path) -> Result<Vec<SessionSummary>, SessionError> {
+    let mut all = list_sessions(sessions_dir)?;
+    all.retain(|s| s.name.starts_with(AUTOSAVE_PREFIX));
+    // Sort by name descending — autosave-YYYYMMDDTHHMMSS sorts lexicographically
+    all.sort_by(|a, b| b.name.cmp(&a.name));
+    Ok(all)
+}
+
+/// Deletes the oldest autosave sessions, keeping only the `retain` newest.
+/// Returns the count of sessions deleted. Non-autosave sessions are untouched.
+pub fn rotate_autosaves(sessions_dir: &Path, retain: usize) -> Result<usize, SessionError> {
+    let autosaves = list_autosave_sessions(sessions_dir)?;
+    let mut pruned = 0;
+    if autosaves.len() > retain {
+        for session in &autosaves[retain..] {
+            delete_session(&session.name, sessions_dir)?;
+            pruned += 1;
+        }
+    }
+    Ok(pruned)
+}
+
 // === Raw hyprctl JSON structs (what hyprctl returns) ===
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -349,6 +383,60 @@ mod tests {
         assert!(!session_exists("x", dir.path()));
         save_session(&make_test_session("x"), dir.path()).unwrap();
         assert!(session_exists("x", dir.path()));
+    }
+
+    #[test]
+    fn test_autosave_name_format() {
+        let name = autosave_name_now();
+        assert!(name.starts_with("autosave-"));
+        // Format: autosave-YYYYMMDDTHHMMSS — total 24 chars
+        assert_eq!(name.len(), 24);
+        let ts = &name[9..];
+        assert_eq!(ts.len(), 15);
+        assert_eq!(&ts[8..9], "T");
+    }
+
+    #[test]
+    fn test_list_autosave_sessions_filters_by_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        save_session(&make_test_session("work"), dir.path()).unwrap();
+        save_session(&make_test_session("autosave-20260309T100000"), dir.path()).unwrap();
+        save_session(&make_test_session("autosave-20260309T110000"), dir.path()).unwrap();
+
+        let autosaves = list_autosave_sessions(dir.path()).unwrap();
+        assert_eq!(autosaves.len(), 2);
+        assert_eq!(autosaves[0].name, "autosave-20260309T110000");
+        assert_eq!(autosaves[1].name, "autosave-20260309T100000");
+    }
+
+    #[test]
+    fn test_rotate_autosaves_keeps_n() {
+        let dir = tempfile::tempdir().unwrap();
+        save_session(&make_test_session("autosave-20260309T100000"), dir.path()).unwrap();
+        save_session(&make_test_session("autosave-20260309T110000"), dir.path()).unwrap();
+        save_session(&make_test_session("autosave-20260309T120000"), dir.path()).unwrap();
+        save_session(&make_test_session("autosave-20260309T130000"), dir.path()).unwrap();
+        save_session(&make_test_session("work"), dir.path()).unwrap();
+
+        let pruned = rotate_autosaves(dir.path(), 2).unwrap();
+        assert_eq!(pruned, 2);
+
+        let remaining = list_autosave_sessions(dir.path()).unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining[0].name, "autosave-20260309T130000");
+        assert_eq!(remaining[1].name, "autosave-20260309T120000");
+
+        assert!(session_exists("work", dir.path()));
+    }
+
+    #[test]
+    fn test_rotate_autosaves_noop_when_under_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        save_session(&make_test_session("autosave-20260309T100000"), dir.path()).unwrap();
+
+        let pruned = rotate_autosaves(dir.path(), 5).unwrap();
+        assert_eq!(pruned, 0);
+        assert_eq!(list_autosave_sessions(dir.path()).unwrap().len(), 1);
     }
 
     #[test]
