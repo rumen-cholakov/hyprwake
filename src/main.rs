@@ -144,11 +144,13 @@ fn main() {
                 } else {
                     println!("Saved sessions:");
                     for s in sessions {
+                        let tag = if s.name.starts_with("autosave-") { " [auto]" } else { "" };
                         println!(
-                            "  {} — {} windows ({})",
+                            "  {} — {} windows ({}){}",
                             s.name,
                             s.client_count,
-                            s.created_at.format("%Y-%m-%d %H:%M")
+                            s.created_at.format("%Y-%m-%d %H:%M"),
+                            tag
                         );
                     }
                 }

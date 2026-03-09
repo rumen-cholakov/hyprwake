@@ -57,3 +57,12 @@ fn test_cli_config_shows_paths() {
         .stdout(predicate::str::contains("Config path"))
         .stdout(predicate::str::contains("Sessions dir"));
 }
+
+#[test]
+fn test_autosave_help() {
+    let mut cmd = Command::cargo_bin("hyprflow").unwrap();
+    cmd.args(["autosave", "--help"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("autosave"));
+}
