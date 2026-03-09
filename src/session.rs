@@ -163,6 +163,28 @@ pub fn rotate_autosaves(sessions_dir: &Path, retain: usize) -> Result<usize, Ses
     Ok(pruned)
 }
 
+/// Parses a human-readable duration string into a `chrono::Duration`.
+///
+/// Supported suffixes: `m` (minutes), `h` (hours), `d` (days).
+/// Examples: `"30m"`, `"24h"`, `"7d"`.
+pub fn parse_max_age(s: &str) -> Result<chrono::Duration, String> {
+    if s.len() < 2 {
+        return Err(format!("invalid duration: '{s}'"));
+    }
+    let (num_str, unit) = s.split_at(s.len() - 1);
+    let num: i64 = num_str
+        .parse()
+        .map_err(|_| format!("invalid duration: '{s}'"))?;
+    match unit {
+        "m" => Ok(chrono::Duration::minutes(num)),
+        "h" => Ok(chrono::Duration::hours(num)),
+        "d" => Ok(chrono::Duration::days(num)),
+        _ => Err(format!(
+            "invalid duration unit '{unit}' in '{s}'. Use m, h, or d."
+        )),
+    }
+}
+
 // === Raw hyprctl JSON structs (what hyprctl returns) ===
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -450,6 +472,28 @@ mod tests {
         let pruned = rotate_autosaves(dir.path(), 0).unwrap();
         assert_eq!(pruned, 0);
         assert_eq!(list_autosave_sessions(dir.path()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_parse_duration_minutes() {
+        assert_eq!(parse_max_age("30m").unwrap(), chrono::Duration::minutes(30));
+    }
+
+    #[test]
+    fn test_parse_duration_hours() {
+        assert_eq!(parse_max_age("24h").unwrap(), chrono::Duration::hours(24));
+    }
+
+    #[test]
+    fn test_parse_duration_days() {
+        assert_eq!(parse_max_age("7d").unwrap(), chrono::Duration::days(7));
+    }
+
+    #[test]
+    fn test_parse_duration_invalid() {
+        assert!(parse_max_age("abc").is_err());
+        assert!(parse_max_age("10x").is_err());
+        assert!(parse_max_age("").is_err());
     }
 
     #[test]
