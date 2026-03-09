@@ -11,6 +11,7 @@ When you reboot or after a power loss, hyprflow restores your applications to th
 - **Kitty terminal support** — restores working directory + shows hint of last command
 - **Smart filtering** — ignores transient windows (Waybar, Wofi, popups)
 - **Dry run** — preview restore without executing
+- **Brave profile support** — restores each profile to its configured workspace
 - **Configurable** — TOML config with per-app settings
 
 ## Installation
@@ -25,7 +26,7 @@ cargo install --path .
 
 ```bash
 # Using your preferred AUR helper
-yay -S hyprflow-git
+yay -S hyprflow
 ```
 
 ## Usage

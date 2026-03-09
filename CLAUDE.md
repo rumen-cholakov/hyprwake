@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build --release              # Release binary (~2 MB)
-cargo test                         # All 39 tests (34 unit + 5 integration)
-cargo test --lib                   # 34 unit tests only
+cargo test                         # All 52 tests (47 unit + 5 integration)
+cargo test --lib                   # 47 unit tests only
 cargo test --test cli_test         # 5 integration tests only
 cargo test <test_name>             # Single test by name
 cargo clippy --all-targets         # Lint (known warnings: 5x assert_cmd::cargo_bin deprecated, 1x too-many-arguments)
@@ -27,6 +27,7 @@ Hyprflow is a Rust CLI that captures and restores Hyprland window sessions via `
 - **config.rs** — TOML config at `$XDG_CONFIG_HOME/hyprflow/config.toml`, per-app capture settings, ignore-class filters
 - **hyprctl.rs** — `HyprctlClient` trait + `RealHyprctl` (shells out to `hyprctl`) + `MockHyprctl` for tests
 - **process.rs** — `ProcessInfoProvider` trait + `RealProcessInfo` (reads `/proc`) + `MockProcessInfo` for tests
+- **brave.rs** — Reads Brave `Local State` JSON, extracts profile info, filters by config
 
 ### Key Design Pattern
 
@@ -40,8 +41,6 @@ Each window is restored sequentially: spawn → poll for new address (100ms inte
 
 `tests/fixtures/` contains real `hyprctl` JSON output (3 windows on 2 monitors) used by both unit and integration tests.
 
-## Known P0 Bugs
+## Active Development
 
-1. Hint shows `/bin/zsh` for idle shells instead of `None`
-2. Monitor index→name mapping may be incorrect (hyprctl monitor order ≠ client monitor index)
-3. No duplicate detection on restore
+Branch `feat/v0.2` is active development for v0.2.0. All P0 bugs from v0.1.0 are resolved.
