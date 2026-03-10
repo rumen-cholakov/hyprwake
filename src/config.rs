@@ -125,7 +125,10 @@ mod tests {
         assert_eq!(config.general.restore_delay_ms, 500);
         assert_eq!(config.general.window_detect_timeout_ms, 5000);
         assert!(
-            config.filters.ignore_classes.contains(&"waybar".to_string()),
+            config
+                .filters
+                .ignore_classes
+                .contains(&"waybar".to_string()),
             "ignore_classes should contain 'waybar'"
         );
         assert!(config.apps.is_empty());
@@ -156,7 +159,10 @@ hint_template = "{cwd}"
         assert_eq!(config.general.window_detect_timeout_ms, 8000);
         assert_eq!(config.filters.ignore_classes, vec!["waybar", "dunst"]);
 
-        let kitty = config.apps.get("kitty").expect("apps.kitty should be present");
+        let kitty = config
+            .apps
+            .get("kitty")
+            .expect("apps.kitty should be present");
         assert_eq!(kitty.binary.as_deref(), Some("/usr/bin/kitty"));
         assert_eq!(kitty.capture_cwd, Some(true));
         assert_eq!(kitty.capture_last_command, Some(false));
@@ -171,7 +177,10 @@ hint_template = "{cwd}"
         assert_eq!(config.general.restore_delay_ms, 500);
         assert_eq!(config.general.window_detect_timeout_ms, 5000);
         assert!(
-            config.filters.ignore_classes.contains(&"waybar".to_string()),
+            config
+                .filters
+                .ignore_classes
+                .contains(&"waybar".to_string()),
             "ignore_classes should contain 'waybar' by default"
         );
         assert!(

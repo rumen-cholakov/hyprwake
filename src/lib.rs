@@ -1,8 +1,8 @@
+pub mod autosave;
+pub mod brave;
+pub mod capture;
 pub mod config;
-pub mod session;
 pub mod hyprctl;
 pub mod process;
-pub mod capture;
 pub mod restore;
-pub mod brave;
-pub mod autosave;
+pub mod session;

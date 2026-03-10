@@ -499,8 +499,7 @@ mod tests {
     #[test]
     fn test_parse_hyprctl_clients_fixture() {
         let raw = include_str!("../tests/fixtures/sample_clients.json");
-        let clients: Vec<HyprClient> =
-            serde_json::from_str(raw).expect("fixture parse failed");
+        let clients: Vec<HyprClient> = serde_json::from_str(raw).expect("fixture parse failed");
 
         assert_eq!(clients.len(), 3);
 

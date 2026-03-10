@@ -1,6 +1,6 @@
 use crate::config::{AppConfig, Config};
 use crate::hyprctl::{HyprctlClient, HyprctlError};
-use crate::process::{ProcessInfoProvider, ProcessError};
+use crate::process::{ProcessError, ProcessInfoProvider};
 use crate::session::{LaunchInfo, Monitor, Session, SessionClient};
 use chrono::Utc;
 use std::collections::HashMap;
@@ -36,8 +36,10 @@ pub fn capture_session(
     // Build a map from monitor ID to monitor name so that
     // HyprClient.monitor (an i32 monitor ID) can be resolved to a
     // human-readable name such as "DP-1".
-    let monitor_map: HashMap<i32, String> =
-        raw_monitors.iter().map(|m| (m.id, m.name.clone())).collect();
+    let monitor_map: HashMap<i32, String> = raw_monitors
+        .iter()
+        .map(|m| (m.id, m.name.clone()))
+        .collect();
 
     let monitors: Vec<Monitor> = raw_monitors
         .iter()
@@ -85,11 +87,18 @@ pub fn capture_session(
 /// no running command).  Used to suppress noisy hints like `/bin/zsh`.
 fn is_plain_shell(cmdline: &str) -> bool {
     const PLAIN_SHELLS: &[&str] = &[
-        "zsh", "bash", "fish", "sh",
-        "/bin/zsh", "/usr/bin/zsh",
-        "/bin/bash", "/usr/bin/bash",
-        "/bin/fish", "/usr/bin/fish",
-        "/bin/sh", "/usr/bin/sh",
+        "zsh",
+        "bash",
+        "fish",
+        "sh",
+        "/bin/zsh",
+        "/usr/bin/zsh",
+        "/bin/bash",
+        "/usr/bin/bash",
+        "/bin/fish",
+        "/usr/bin/fish",
+        "/bin/sh",
+        "/usr/bin/sh",
     ];
     PLAIN_SHELLS.contains(&cmdline)
 }
@@ -382,8 +391,7 @@ mod tests {
             children,
         };
 
-        let session =
-            capture_session("test", &hyprctl, &process, &config).expect("capture failed");
+        let session = capture_session("test", &hyprctl, &process, &config).expect("capture failed");
 
         assert_eq!(session.clients.len(), 1);
         let launch = &session.clients[0].launch;
@@ -542,8 +550,7 @@ mod tests {
             children,
         };
 
-        let session =
-            capture_session("test", &hyprctl, &process, &config).expect("capture failed");
+        let session = capture_session("test", &hyprctl, &process, &config).expect("capture failed");
 
         assert_eq!(session.clients.len(), 1);
         assert!(
@@ -596,7 +603,9 @@ mod tests {
         };
         let config = Config {
             general: GeneralConfig::default(),
-            filters: FilterConfig { ignore_classes: vec![] },
+            filters: FilterConfig {
+                ignore_classes: vec![],
+            },
             apps: HashMap::new(),
         };
 

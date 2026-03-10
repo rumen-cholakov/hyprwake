@@ -4,10 +4,16 @@ use hyprflow::config::{config_path, load_config, sessions_dir};
 use hyprflow::hyprctl::RealHyprctl;
 use hyprflow::process::RealProcessInfo;
 use hyprflow::restore::restore_session;
-use hyprflow::session::{delete_session, list_sessions, load_session, save_session, session_exists};
+use hyprflow::session::{
+    delete_session, list_sessions, load_session, save_session, session_exists,
+};
 
 #[derive(Parser)]
-#[command(name = "hyprflow", version, about = "Save and restore Hyprland sessions")]
+#[command(
+    name = "hyprflow",
+    version,
+    about = "Save and restore Hyprland sessions"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -109,7 +115,12 @@ fn main() {
             }
         }
 
-        Commands::Restore { name, dry_run, max_age, on_login } => {
+        Commands::Restore {
+            name,
+            dry_run,
+            max_age,
+            on_login,
+        } => {
             if on_login {
                 println!("Add this line to ~/.config/hypr/hyprland.conf:");
                 println!();
@@ -213,7 +224,11 @@ fn main() {
                 } else {
                     println!("Saved sessions:");
                     for s in sessions {
-                        let tag = if s.name.starts_with("autosave-") { " [auto]" } else { "" };
+                        let tag = if s.name.starts_with("autosave-") {
+                            " [auto]"
+                        } else {
+                            ""
+                        };
                         println!(
                             "  {} — {} windows ({}){}",
                             s.name,
@@ -269,10 +284,7 @@ fn main() {
                         .and_then(|c| c.profile_workspaces.as_ref());
                     for profile in &profiles {
                         if let Some(ws) = profile_ws.and_then(|m| m.get(&profile.directory)) {
-                            println!(
-                                "  ✓ {} ({}) → ws={}",
-                                profile.directory, profile.name, ws
-                            );
+                            println!("  ✓ {} ({}) → ws={}", profile.directory, profile.name, ws);
                         } else {
                             println!(
                                 "  · {} ({}) — not mapped, will be skipped",
@@ -291,10 +303,16 @@ fn main() {
             }
         }
 
-        Commands::Autosave { now, install, uninstall } => {
+        Commands::Autosave {
+            now,
+            install,
+            uninstall,
+        } => {
             let flag_count = [now, install, uninstall].iter().filter(|&&f| f).count();
             if flag_count > 1 {
-                eprintln!("Error: only one of --now, --install, --uninstall may be specified at a time.");
+                eprintln!(
+                    "Error: only one of --now, --install, --uninstall may be specified at a time."
+                );
                 std::process::exit(1);
             }
 
@@ -344,8 +362,8 @@ fn main() {
                         let total_before = hyprflow::session::list_autosave_sessions(&sessions_dir)
                             .map(|s| s.len())
                             .unwrap_or(0);
-                        let pruned = hyprflow::session::rotate_autosaves(&sessions_dir, retain)
-                            .unwrap_or(0);
+                        let pruned =
+                            hyprflow::session::rotate_autosaves(&sessions_dir, retain).unwrap_or(0);
                         let retained = total_before.saturating_sub(pruned);
 
                         println!(

@@ -107,7 +107,10 @@ mod tests {
         let json = r#"{"profile": {"info_cache": {"Default": {"name": ""}}}}"#;
         let profiles = parse_profiles_from_local_state(json).unwrap();
         assert_eq!(profiles.len(), 1);
-        assert_eq!(profiles[0].name, "Default", "empty name should fall back to directory");
+        assert_eq!(
+            profiles[0].name, "Default",
+            "empty name should fall back to directory"
+        );
     }
 
     #[test]
@@ -133,10 +136,7 @@ mod tests {
                 name: "ABRH".to_string(),
             },
         ];
-        let mappings = HashMap::from([
-            ("Default".to_string(), 1),
-            ("Profile 1".to_string(), 6),
-        ]);
+        let mappings = HashMap::from([("Default".to_string(), 1), ("Profile 1".to_string(), 6)]);
         let filtered = filter_profiles_by_config(profiles, Some(&mappings));
         assert_eq!(filtered.len(), 2);
         assert!(filtered.iter().any(|p| p.directory == "Default"));
