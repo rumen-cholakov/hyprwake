@@ -4,10 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased] (v0.2.0)
+## [0.2.0] - 2026-03-10
 
 ### Added
 
+- CI/CD pipeline: GitHub Actions for tests/lint + auto-publish to AUR on version tag
 - Brave browser profile support: capture active profiles from `Local State`, restore one window per profile with `--profile-directory` flag
 - Configurable workspace mapping per Brave profile via `profile_workspaces` in config.toml
 - `hyprflow config` now displays detected Brave profiles with mapping status
