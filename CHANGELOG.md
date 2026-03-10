@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.2.0] - 2026-03-10
+
+### Added
+
+- CI/CD pipeline: GitHub Actions for tests/lint + auto-publish to AUR on version tag
+- Brave browser profile support: capture active profiles from `Local State`, restore one window per profile with `--profile-directory` flag
+- Configurable workspace mapping per Brave profile via `profile_workspaces` in config.toml
+- `hyprflow config` now displays detected Brave profiles with mapping status
+- Count-based duplicate detection on restore: skips already-running windows, restores only missing count
+- Autosave with rotation: `hyprflow autosave --now` captures and keeps last N sessions (configurable via `autosave_retain`)
+- Systemd timer management: `hyprflow autosave --install` / `--uninstall` for automated periodic saves
+- `--max-age` flag for restore: skip restore if session is older than specified duration (e.g., `24h`, `7d`)
+- `--on-login` flag for restore: prints `exec-once` line for Hyprland config
+
+### Fixed
+
+- Filter plain shell hints (`/bin/zsh`, `bash`, `fish`, `sh`) from last-command detection — idle terminals no longer show noisy hints
+- Monitor mapping now uses monitor ID instead of array index, fixing incorrect monitor assignment
+- Race condition in Brave profile restore: snapshot addresses before spawning (not after)
+
+---
+
 ## [0.1.0] - 2026-03-08
 
 Initial release.
@@ -29,8 +51,3 @@ Initial release.
 - Skip kitten `__atexit__` helper process when capturing Kitty CWD to avoid reading the wrong working directory
 - Derive `Default` for `Config` instead of manual implementation (clippy compliance)
 
-### Known Issues
-
-- Idle shell windows may show `/bin/zsh` as the last command hint instead of nothing
-- Monitor index to name mapping may be incorrect when monitor order differs between `hyprctl monitors` and `hyprctl clients`
-- No duplicate detection on restore: running restore when apps are already open creates duplicates

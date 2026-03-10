@@ -4,12 +4,20 @@ use serde::{Deserialize, Serialize};
 // === Hyprflow session structs (what we save to disk) ===
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BraveProfile {
+    pub directory: String, // "Default", "Profile 1", etc.
+    pub name: String,      // "Credifit", "LinkPJ", etc.
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub name: String,
     pub created_at: DateTime<Utc>,
     pub hyprland_version: String,
     pub monitors: Vec<Monitor>,
     pub clients: Vec<SessionClient>,
+    #[serde(default)]
+    pub brave_profiles: Vec<BraveProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +126,65 @@ pub fn session_exists(name: &str, sessions_dir: &Path) -> bool {
     sessions_dir.join(format!("{name}.json")).exists()
 }
 
+// === Autosave helpers ===
+
+pub const AUTOSAVE_PREFIX: &str = "autosave-";
+
+pub fn autosave_name_now() -> String {
+    let now = Utc::now();
+    format!("autosave-{}", now.format("%Y%m%dT%H%M%S"))
+}
+
+/// Returns autosave sessions only (name starts with `AUTOSAVE_PREFIX`),
+/// sorted by name descending. The timestamp format `YYYYMMDDTHHMMSS` sorts
+/// lexicographically, so newest autosave is always first.
+pub fn list_autosave_sessions(sessions_dir: &Path) -> Result<Vec<SessionSummary>, SessionError> {
+    let mut all = list_sessions(sessions_dir)?;
+    all.retain(|s| s.name.starts_with(AUTOSAVE_PREFIX));
+    // Sort by name descending — autosave-YYYYMMDDTHHMMSS sorts lexicographically
+    all.sort_by(|a, b| b.name.cmp(&a.name));
+    Ok(all)
+}
+
+/// Deletes the oldest autosave sessions, keeping only the `retain` newest.
+/// Returns the count of sessions deleted. Non-autosave sessions are untouched.
+pub fn rotate_autosaves(sessions_dir: &Path, retain: usize) -> Result<usize, SessionError> {
+    if retain == 0 {
+        return Ok(0);
+    }
+    let autosaves = list_autosave_sessions(sessions_dir)?;
+    let mut pruned = 0;
+    if autosaves.len() > retain {
+        for session in &autosaves[retain..] {
+            delete_session(&session.name, sessions_dir)?;
+            pruned += 1;
+        }
+    }
+    Ok(pruned)
+}
+
+/// Parses a human-readable duration string into a `chrono::Duration`.
+///
+/// Supported suffixes: `m` (minutes), `h` (hours), `d` (days).
+/// Examples: `"30m"`, `"24h"`, `"7d"`.
+pub fn parse_max_age(s: &str) -> Result<chrono::Duration, String> {
+    if s.len() < 2 {
+        return Err(format!("invalid duration: '{s}'"));
+    }
+    let (num_str, unit) = s.split_at(s.len() - 1);
+    let num: i64 = num_str
+        .parse()
+        .map_err(|_| format!("invalid duration: '{s}'"))?;
+    match unit {
+        "m" => Ok(chrono::Duration::minutes(num)),
+        "h" => Ok(chrono::Duration::hours(num)),
+        "d" => Ok(chrono::Duration::days(num)),
+        _ => Err(format!(
+            "invalid duration unit '{unit}' in '{s}'. Use m, h, or d."
+        )),
+    }
+}
+
 // === Raw hyprctl JSON structs (what hyprctl returns) ===
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +252,7 @@ mod tests {
                     hint: None,
                 },
             }],
+            brave_profiles: vec![],
         };
 
         let json = serde_json::to_string(&session).expect("serialization failed");
@@ -239,7 +307,59 @@ mod tests {
                     hint: None,
                 },
             }],
+            brave_profiles: vec![],
         }
+    }
+
+    #[test]
+    fn test_session_roundtrip_with_brave_profiles() {
+        let session = Session {
+            name: "brave-test".to_string(),
+            created_at: DateTime::parse_from_rfc3339("2026-03-08T10:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            hyprland_version: "0.54.1".to_string(),
+            monitors: vec![],
+            clients: vec![],
+            brave_profiles: vec![
+                BraveProfile {
+                    directory: "Default".to_string(),
+                    name: "Credifit".to_string(),
+                },
+                BraveProfile {
+                    directory: "Profile 1".to_string(),
+                    name: "LinkPJ".to_string(),
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&session).expect("serialization failed");
+        let restored: Session = serde_json::from_str(&json).expect("deserialization failed");
+
+        assert_eq!(restored.brave_profiles.len(), 2);
+        assert_eq!(restored.brave_profiles[0].directory, "Default");
+        assert_eq!(restored.brave_profiles[0].name, "Credifit");
+        assert_eq!(restored.brave_profiles[1].directory, "Profile 1");
+        assert_eq!(restored.brave_profiles[1].name, "LinkPJ");
+    }
+
+    #[test]
+    fn test_session_backward_compat_no_brave_profiles() {
+        // A session JSON without the brave_profiles field (as saved by older versions).
+        let json = r#"{
+            "name": "old-session",
+            "created_at": "2026-03-08T10:00:00Z",
+            "hyprland_version": "0.54.0",
+            "monitors": [],
+            "clients": []
+        }"#;
+
+        let session: Session = serde_json::from_str(json).expect("deserialization must succeed");
+        assert_eq!(
+            session.brave_profiles.len(),
+            0,
+            "missing brave_profiles field should default to empty vec"
+        );
     }
 
     #[test]
@@ -291,10 +411,95 @@ mod tests {
     }
 
     #[test]
+    fn test_autosave_name_format() {
+        let name = autosave_name_now();
+        assert!(name.starts_with("autosave-"));
+        // Format: autosave-YYYYMMDDTHHMMSS — total 24 chars
+        assert_eq!(name.len(), 24);
+        let ts = &name[9..];
+        assert_eq!(ts.len(), 15);
+        assert_eq!(&ts[8..9], "T");
+    }
+
+    #[test]
+    fn test_list_autosave_sessions_filters_by_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        save_session(&make_test_session("work"), dir.path()).unwrap();
+        save_session(&make_test_session("autosave-20260309T100000"), dir.path()).unwrap();
+        save_session(&make_test_session("autosave-20260309T110000"), dir.path()).unwrap();
+
+        let autosaves = list_autosave_sessions(dir.path()).unwrap();
+        assert_eq!(autosaves.len(), 2);
+        assert_eq!(autosaves[0].name, "autosave-20260309T110000");
+        assert_eq!(autosaves[1].name, "autosave-20260309T100000");
+    }
+
+    #[test]
+    fn test_rotate_autosaves_keeps_n() {
+        let dir = tempfile::tempdir().unwrap();
+        save_session(&make_test_session("autosave-20260309T100000"), dir.path()).unwrap();
+        save_session(&make_test_session("autosave-20260309T110000"), dir.path()).unwrap();
+        save_session(&make_test_session("autosave-20260309T120000"), dir.path()).unwrap();
+        save_session(&make_test_session("autosave-20260309T130000"), dir.path()).unwrap();
+        save_session(&make_test_session("work"), dir.path()).unwrap();
+
+        let pruned = rotate_autosaves(dir.path(), 2).unwrap();
+        assert_eq!(pruned, 2);
+
+        let remaining = list_autosave_sessions(dir.path()).unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining[0].name, "autosave-20260309T130000");
+        assert_eq!(remaining[1].name, "autosave-20260309T120000");
+
+        assert!(session_exists("work", dir.path()));
+    }
+
+    #[test]
+    fn test_rotate_autosaves_noop_when_under_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        save_session(&make_test_session("autosave-20260309T100000"), dir.path()).unwrap();
+
+        let pruned = rotate_autosaves(dir.path(), 5).unwrap();
+        assert_eq!(pruned, 0);
+        assert_eq!(list_autosave_sessions(dir.path()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_rotate_autosaves_retain_zero_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        save_session(&make_test_session("autosave-20260309T100000"), dir.path()).unwrap();
+
+        let pruned = rotate_autosaves(dir.path(), 0).unwrap();
+        assert_eq!(pruned, 0);
+        assert_eq!(list_autosave_sessions(dir.path()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_parse_duration_minutes() {
+        assert_eq!(parse_max_age("30m").unwrap(), chrono::Duration::minutes(30));
+    }
+
+    #[test]
+    fn test_parse_duration_hours() {
+        assert_eq!(parse_max_age("24h").unwrap(), chrono::Duration::hours(24));
+    }
+
+    #[test]
+    fn test_parse_duration_days() {
+        assert_eq!(parse_max_age("7d").unwrap(), chrono::Duration::days(7));
+    }
+
+    #[test]
+    fn test_parse_duration_invalid() {
+        assert!(parse_max_age("abc").is_err());
+        assert!(parse_max_age("10x").is_err());
+        assert!(parse_max_age("").is_err());
+    }
+
+    #[test]
     fn test_parse_hyprctl_clients_fixture() {
         let raw = include_str!("../tests/fixtures/sample_clients.json");
-        let clients: Vec<HyprClient> =
-            serde_json::from_str(raw).expect("fixture parse failed");
+        let clients: Vec<HyprClient> = serde_json::from_str(raw).expect("fixture parse failed");
 
         assert_eq!(clients.len(), 3);
 

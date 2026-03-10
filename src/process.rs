@@ -24,8 +24,7 @@ pub struct RealProcessInfo;
 
 impl ProcessInfoProvider for RealProcessInfo {
     fn get_cwd(&self, pid: u32) -> Result<PathBuf, ProcessError> {
-        std::fs::read_link(format!("/proc/{pid}/cwd"))
-            .map_err(|_| ProcessError::NotFound(pid))
+        std::fs::read_link(format!("/proc/{pid}/cwd")).map_err(|_| ProcessError::NotFound(pid))
     }
 
     fn get_children(&self, pid: u32) -> Result<Vec<ChildProcess>, ProcessError> {
@@ -40,7 +39,11 @@ impl ProcessInfoProvider for RealProcessInfo {
                     if let Ok(child_pid) = child_pid_str.parse::<u32>() {
                         let cwd = self.get_cwd(child_pid).unwrap_or_default();
                         let cmdline = read_cmdline(child_pid);
-                        children.push(ChildProcess { pid: child_pid, cwd, cmdline });
+                        children.push(ChildProcess {
+                            pid: child_pid,
+                            cwd,
+                            cmdline,
+                        });
                     }
                 }
             }
@@ -53,7 +56,8 @@ fn read_cmdline(pid: u32) -> String {
     std::fs::read(format!("/proc/{pid}/cmdline"))
         .ok()
         .map(|bytes| {
-            bytes.split(|&b| b == 0)
+            bytes
+                .split(|&b| b == 0)
                 .filter_map(|s| std::str::from_utf8(s).ok())
                 .next()
                 .unwrap_or("")
@@ -74,7 +78,10 @@ mod tests {
 
     impl ProcessInfoProvider for MockProcessInfo {
         fn get_cwd(&self, pid: u32) -> Result<PathBuf, ProcessError> {
-            self.cwds.get(&pid).cloned().ok_or(ProcessError::NotFound(pid))
+            self.cwds
+                .get(&pid)
+                .cloned()
+                .ok_or(ProcessError::NotFound(pid))
         }
 
         fn get_children(&self, pid: u32) -> Result<Vec<ChildProcess>, ProcessError> {
@@ -111,7 +118,9 @@ mod tests {
         assert_eq!(parent_cwd, PathBuf::from("/home/user"));
 
         // Verify get_children returns correct child data
-        let result = mock.get_children(parent_pid).expect("should return children");
+        let result = mock
+            .get_children(parent_pid)
+            .expect("should return children");
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].pid, child_pid);
         assert_eq!(result[0].cwd, child_cwd);

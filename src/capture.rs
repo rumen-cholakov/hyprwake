@@ -1,6 +1,6 @@
 use crate::config::{AppConfig, Config};
 use crate::hyprctl::{HyprctlClient, HyprctlError};
-use crate::process::{ProcessInfoProvider, ProcessError};
+use crate::process::{ProcessError, ProcessInfoProvider};
 use crate::session::{LaunchInfo, Monitor, Session, SessionClient};
 use chrono::Utc;
 use std::collections::HashMap;
@@ -36,8 +36,10 @@ pub fn capture_session(
     // Build a map from monitor ID to monitor name so that
     // HyprClient.monitor (an i32 monitor ID) can be resolved to a
     // human-readable name such as "DP-1".
-    let monitor_map: HashMap<i32, String> =
-        raw_monitors.iter().map(|m| (m.id, m.name.clone())).collect();
+    let monitor_map: HashMap<i32, String> = raw_monitors
+        .iter()
+        .map(|m| (m.id, m.name.clone()))
+        .collect();
 
     let monitors: Vec<Monitor> = raw_monitors
         .iter()
@@ -55,12 +57,27 @@ pub fn capture_session(
         .map(|c| build_session_client(c, &monitor_map, process_info, config))
         .collect();
 
+    let brave_profiles = if clients.iter().any(|c| c.class == "brave-browser") {
+        let all_profiles = crate::brave::read_profiles().unwrap_or_else(|e| {
+            eprintln!("Warning: could not read Brave profiles: {e}");
+            vec![]
+        });
+        let profile_ws = config
+            .apps
+            .get("brave-browser")
+            .and_then(|c| c.profile_workspaces.as_ref());
+        crate::brave::filter_profiles_by_config(all_profiles, profile_ws)
+    } else {
+        vec![]
+    };
+
     Ok(Session {
         name: name.to_string(),
         created_at: Utc::now(),
         hyprland_version: version,
         monitors,
         clients,
+        brave_profiles,
     })
 }
 
@@ -70,11 +87,18 @@ pub fn capture_session(
 /// no running command).  Used to suppress noisy hints like `/bin/zsh`.
 fn is_plain_shell(cmdline: &str) -> bool {
     const PLAIN_SHELLS: &[&str] = &[
-        "zsh", "bash", "fish", "sh",
-        "/bin/zsh", "/usr/bin/zsh",
-        "/bin/bash", "/usr/bin/bash",
-        "/bin/fish", "/usr/bin/fish",
-        "/bin/sh", "/usr/bin/sh",
+        "zsh",
+        "bash",
+        "fish",
+        "sh",
+        "/bin/zsh",
+        "/usr/bin/zsh",
+        "/bin/bash",
+        "/usr/bin/bash",
+        "/bin/fish",
+        "/usr/bin/fish",
+        "/bin/sh",
+        "/usr/bin/sh",
     ];
     PLAIN_SHELLS.contains(&cmdline)
 }
@@ -339,6 +363,8 @@ mod tests {
                 capture_cwd: Some(true),
                 capture_last_command: None,
                 hint_template: None,
+                profile_workspaces: None,
+                default_workspace: None,
             },
         );
 
@@ -365,8 +391,7 @@ mod tests {
             children,
         };
 
-        let session =
-            capture_session("test", &hyprctl, &process, &config).expect("capture failed");
+        let session = capture_session("test", &hyprctl, &process, &config).expect("capture failed");
 
         assert_eq!(session.clients.len(), 1);
         let launch = &session.clients[0].launch;
@@ -401,6 +426,8 @@ mod tests {
                 capture_cwd: None,
                 capture_last_command: None,
                 hint_template: None,
+                profile_workspaces: None,
+                default_workspace: None,
             },
         );
 
@@ -485,6 +512,8 @@ mod tests {
                 capture_cwd: Some(true),
                 capture_last_command: Some(true),
                 hint_template: None,
+                profile_workspaces: None,
+                default_workspace: None,
             },
         );
 
@@ -521,8 +550,7 @@ mod tests {
             children,
         };
 
-        let session =
-            capture_session("test", &hyprctl, &process, &config).expect("capture failed");
+        let session = capture_session("test", &hyprctl, &process, &config).expect("capture failed");
 
         assert_eq!(session.clients.len(), 1);
         assert!(
@@ -563,5 +591,28 @@ mod tests {
             session.clients[0].monitor, "DP-5",
             "monitor must be resolved by ID (0 → DP-5), not by array index (0 → DP-4)"
         );
+    }
+
+    // ── Task 4: brave_profiles field is populated when Brave is present ──
+
+    #[test]
+    fn test_capture_includes_brave_profiles_field() {
+        let hyprctl = MockHyprctl {
+            clients: vec![make_hypr_client("brave-browser", 7001)],
+            monitors: vec![make_monitor("DP-1")],
+        };
+        let config = Config {
+            general: GeneralConfig::default(),
+            filters: FilterConfig {
+                ignore_classes: vec![],
+            },
+            apps: HashMap::new(),
+        };
+
+        let session = capture_session("test", &hyprctl, &empty_process(), &config).unwrap();
+        // brave_profiles is populated from Local State if Brave is installed;
+        // in test env it may be empty or populated — just verify it doesn't error.
+        // The field exists and is accessible.
+        let _ = &session.brave_profiles;
     }
 }
