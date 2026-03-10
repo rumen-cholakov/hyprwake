@@ -8,7 +8,7 @@
 - [x] Brave browser profile support (capture from Local State, restore with `--profile-directory`, configurable workspace mapping)
 - [x] Autosave with rotation via systemd timer
 - [x] Restore on login via `exec-once` in Hyprland config (`--on-login`, `--max-age`)
-- [ ] CI/CD pipeline: auto-publish to AUR on new release tag on main
+- [x] CI/CD pipeline: auto-publish to AUR on new release tag on main
 
 ## v0.3
 
