@@ -122,53 +122,85 @@ fn main() {
 
             let name = name.unwrap_or_else(|| config.general.default_session.clone());
 
-            match load_session(&name, &sessions_dir) {
-                Ok(session) => {
-                    if let Some(ref age_str) = max_age {
-                        match hyprflow::session::parse_max_age(age_str) {
-                            Ok(max_duration) => {
-                                let age = chrono::Utc::now() - session.created_at;
-                                if age > max_duration {
-                                    println!(
-                                        "Session '{}' is too old (created {}).",
-                                        name,
-                                        session.created_at.format("%Y-%m-%d %H:%M")
-                                    );
-                                    println!("Skipping restore (max age: {}).", age_str);
-                                    return;
+            let session = match load_session(&name, &sessions_dir) {
+                Ok(s) => s,
+                Err(hyprflow::session::SessionError::NotFound(_)) => {
+                    // If requesting the default session and it doesn't exist,
+                    // fall back to the most recent autosave
+                    if name == config.general.default_session {
+                        match hyprflow::session::list_autosave_sessions(&sessions_dir) {
+                            Ok(autosaves) if !autosaves.is_empty() => {
+                                let fallback_name = &autosaves[0].name;
+                                println!(
+                                    "Session '{}' not found. Falling back to '{}'.",
+                                    name, fallback_name
+                                );
+                                match load_session(fallback_name, &sessions_dir) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        eprintln!("Error loading fallback session: {}", e);
+                                        std::process::exit(1);
+                                    }
                                 }
                             }
-                            Err(e) => {
-                                eprintln!("Error: {}", e);
+                            _ => {
+                                eprintln!(
+                                    "Session '{}' not found and no autosave sessions available.",
+                                    name
+                                );
                                 std::process::exit(1);
                             }
                         }
-                    }
-
-                    let hyprctl = RealHyprctl;
-                    match restore_session(&session, &hyprctl, &config, dry_run, cli.verbose) {
-                        Ok(report) => {
-                            if dry_run {
-                                println!("Dry run for session '{}':", name);
-                            } else {
-                                println!("Restored session '{}':", name);
-                            }
-                            println!(
-                                "  {} restored, {} skipped, {} failed",
-                                report.restored, report.skipped, report.failed
-                            );
-                            for detail in &report.details {
-                                println!("  {}", detail);
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Error restoring session: {}", e);
-                            std::process::exit(1);
-                        }
+                    } else {
+                        eprintln!("Error: session '{}' not found", name);
+                        std::process::exit(1);
                     }
                 }
                 Err(e) => {
                     eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            if let Some(ref age_str) = max_age {
+                match hyprflow::session::parse_max_age(age_str) {
+                    Ok(max_duration) => {
+                        let age = chrono::Utc::now() - session.created_at;
+                        if age > max_duration {
+                            println!(
+                                "Session '{}' is too old (created {}).",
+                                session.name,
+                                session.created_at.format("%Y-%m-%d %H:%M")
+                            );
+                            println!("Skipping restore (max age: {}).", age_str);
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+
+            let hyprctl = RealHyprctl;
+            match restore_session(&session, &hyprctl, &config, dry_run, cli.verbose) {
+                Ok(report) => {
+                    if dry_run {
+                        println!("Dry run for session '{}':", session.name);
+                    } else {
+                        println!("Restored session '{}':", session.name);
+                    }
+                    println!(
+                        "  {} restored, {} skipped, {} failed",
+                        report.restored, report.skipped, report.failed
+                    );
+                    for detail in &report.details {
+                        println!("  {}", detail);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error restoring session: {}", e);
                     std::process::exit(1);
                 }
             }
