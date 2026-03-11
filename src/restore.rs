@@ -2,7 +2,7 @@ use crate::config::Config;
 use crate::hyprctl::{HyprctlClient, HyprctlError};
 use crate::session::{Session, SessionClient};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -180,6 +180,8 @@ pub fn restore_session(
                 // Launch brave with profile directory.
                 let spawn_result = Command::new(&binary)
                     .arg(format!("--profile-directory={}", profile.directory))
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
                     .spawn();
 
                 match spawn_result {
@@ -262,6 +264,8 @@ fn restore_single_client(
     let launch_cmd = build_launch_command(client);
     Command::new(&launch_cmd[0])
         .args(&launch_cmd[1..])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .map_err(|e| {
             HyprctlError::CommandFailed(format!("spawn '{}' failed: {e}", client.launch.command))
