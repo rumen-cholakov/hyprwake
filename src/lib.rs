@@ -13,5 +13,6 @@ pub mod resume;
 pub mod save;
 pub mod service;
 pub mod session;
+pub mod support;
 pub mod watchlock;
 pub mod workspace;

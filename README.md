@@ -127,6 +127,7 @@ hyprwake autosave --now         # snapshot and rotate
 hyprwake status                 # concise restore/watcher health summary
 hyprwake doctor                 # check the whole pipeline
 hyprwake doctor --json          # same checks, structured for scripts
+hyprwake support-bundle         # sanitized diagnostic report for an issue
 hyprwake config --init          # write a config seeded from this machine
 ```
 
@@ -163,6 +164,11 @@ profile names so they can be restored. The log lives in
 `~/.local/state/hyprwake/`. Treat both directories as private desktop state:
 do not share a snapshot or log without reviewing it, and avoid placing secrets
 in command-line arguments.
+
+`hyprwake support-bundle` writes a new owner-only JSON report with platform
+metadata and redacted `doctor` checks. It deliberately excludes snapshots,
+logs, configuration, command arguments, working directories, and window
+titles, so it is the preferred starting point for an issue report.
 
 ## Configuration
 

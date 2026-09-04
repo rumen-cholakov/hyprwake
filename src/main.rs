@@ -12,6 +12,7 @@ use hyprwake::session::{
     delete_session, list_autosave_sessions, list_sessions, load_session, parse_max_age,
     session_exists, SessionError,
 };
+use hyprwake::support;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -100,6 +101,12 @@ enum Commands {
     Uninstall,
     /// Show whether automatic session restoration is ready
     Status,
+    /// Write a sanitized diagnostic report for a support request
+    SupportBundle {
+        /// Destination path; defaults to a timestamped file in this directory
+        #[arg(short, long, value_name = "PATH")]
+        output: Option<std::path::PathBuf>,
+    },
     /// Check what would be saved and restored right now
     Doctor {
         /// Emit checks as JSON for scripts and compatibility reports
@@ -144,6 +151,7 @@ fn main() -> ExitCode {
         Commands::Install { max_age } => cmd_install(&max_age),
         Commands::Uninstall => cmd_uninstall(),
         Commands::Status => cmd_status(&config, &dir),
+        Commands::SupportBundle { output } => cmd_support_bundle(output, &config, &dir),
         Commands::Doctor { json } => cmd_doctor(&config, &dir, json),
     }
 }
@@ -693,6 +701,28 @@ fn cmd_status(config: &Config, dir: &Path) -> ExitCode {
     };
     println!("Autosave timer: {timer}");
     ExitCode::SUCCESS
+}
+
+fn cmd_support_bundle(output: Option<std::path::PathBuf>, config: &Config, dir: &Path) -> ExitCode {
+    let path = output.unwrap_or_else(support::default_path);
+    let checks = doctor::run(&RealHyprctl, &RealProcessInfo, config, dir);
+    match support::write_bundle(&path, &checks) {
+        Ok(()) => {
+            println!("Wrote sanitized support bundle to {}", path.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            eprintln!(
+                "hyprwake: {} already exists; choose a new --output path",
+                path.display()
+            );
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("hyprwake: could not write support bundle: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn cmd_doctor(config: &Config, dir: &Path, json: bool) -> ExitCode {
