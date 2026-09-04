@@ -53,7 +53,7 @@ nothing, while an idle desktop writes nothing at all.
 ## Install
 
 ```sh
-cargo install --git https://github.com/rumen-cholakov/hyprwake
+cargo install --git https://github.com/rumen-cholakov/hyprwake --tag v0.1.2
 ```
 
 Or take the binary from a [release](https://github.com/rumen-cholakov/hyprwake/releases)
@@ -83,6 +83,20 @@ Take a first snapshot so there is something to come back to:
 ```sh
 hyprwake save
 ```
+
+### First Omarchy reboot
+
+Before trusting an automatic restore, check the plan it will use:
+
+```sh
+hyprwake save
+hyprwake restore --dry-run
+hyprwake install
+hyprwake doctor
+```
+
+When `doctor` reports no failures, reboot. Remove the hooks and watcher again
+at any time with `hyprwake uninstall`.
 
 ## Usage
 
