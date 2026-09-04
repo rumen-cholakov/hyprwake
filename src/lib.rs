@@ -9,6 +9,7 @@ pub mod lua;
 pub mod omarchy;
 pub mod process;
 pub mod restore;
+pub mod resume;
 pub mod save;
 pub mod session;
 pub mod workspace;

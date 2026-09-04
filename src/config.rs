@@ -94,6 +94,28 @@ pub struct TuiConfig {
     pub programs: Vec<String>,
     #[serde(default = "default_shells")]
     pub shells: Vec<String>,
+    /// Programs that can reopen the session they were in, keyed by program
+    /// name.
+    #[serde(default = "default_resume_rules")]
+    pub resume: HashMap<String, ResumeConfig>,
+}
+
+/// How to recover a program's session and ask it to resume.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeConfig {
+    /// Path pattern matched against the program's open files. One segment
+    /// carries `{id}`; `*` matches within a segment.
+    pub fd_glob: String,
+    /// Arguments appended when an id is recovered; `{id}` is substituted.
+    pub args: Vec<String>,
+    /// Arguments used when no id could be recovered.
+    #[serde(default)]
+    pub fallback: Vec<String>,
+    /// Flags to drop from the captured argv first, so a session started with
+    /// its own resume flag is not asked to resume twice. A non-flag token
+    /// following one of these is dropped with it.
+    #[serde(default)]
+    pub strip_flags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -268,6 +290,28 @@ fn default_tui_programs() -> Vec<String> {
     .collect()
 }
 
+/// Claude Code keeps a per-session directory open under /tmp whose name is
+/// the session id, so the exact conversation can be reopened. `--continue`
+/// is the fallback: it reopens the most recent conversation in the directory,
+/// which is right only when there was one.
+fn default_resume_rules() -> HashMap<String, ResumeConfig> {
+    let mut rules = HashMap::new();
+    rules.insert(
+        "claude".to_string(),
+        ResumeConfig {
+            fd_glob: "/tmp/claude-*/*/{id}/*".to_string(),
+            args: vec!["--resume".to_string(), "{id}".to_string()],
+            fallback: vec!["--continue".to_string()],
+            strip_flags: vec![
+                "--resume".to_string(),
+                "--continue".to_string(),
+                "-c".to_string(),
+            ],
+        },
+    );
+    rules
+}
+
 fn default_shells() -> Vec<String> {
     ["bash", "zsh", "fish", "sh", "dash", "nu", "elvish", "xonsh"]
         .into_iter()
@@ -320,6 +364,7 @@ impl Default for TuiConfig {
         Self {
             programs: default_tui_programs(),
             shells: default_shells(),
+            resume: default_resume_rules(),
         }
     }
 }

@@ -23,6 +23,7 @@ hyprwake doctor               # what would happen if you did
 | Workspaces | including named workspaces and scratchpads (`special:*`) |
 | Terminals | reopened in the shell's working directory |
 | TUIs | `nvim`, `yazi`, `btop`, `lazygit`… relaunched inside the terminal, in their own directory |
+| Sessions | a program that can reopen its own session is asked to — Claude Code comes back on the same conversation, not a blank one |
 | Floating windows | pixel-exact position and size |
 | Window state | pinned, fullscreen, maximized |
 | Browser profiles | one window per Chromium/Chrome/Brave profile, each on its own workspace |
@@ -131,6 +132,15 @@ extra_args = []              # e.g. an --app-id that pins the window class
 [tui]
 programs = ["nvim", "yazi", "btop"]   # relaunched inside their terminal
 
+# Programs that can reopen a specific session. The id is recovered from the
+# program's own open files, so several sessions in one directory each come
+# back as themselves. This rule ships by default.
+[tui.resume.claude]
+fd_glob = "/tmp/claude-*/*/{id}/*"    # one segment carries {id}
+args = ["--resume", "{id}"]
+fallback = ["--continue"]             # when no id could be recovered
+strip_flags = ["--resume", "-c", "--continue"]
+
 [apps.Spotify]
 no_spawn = true              # record the window, never launch it
 
@@ -146,7 +156,9 @@ profile_workspaces = { "Default" = "2", "Work" = "6" }
   tree. Windows return to the right workspace in their old reading order and
   re-tile from there — close, but not split-for-split identical. Floating
   windows *are* exact.
-- **In-app state.** Scrollback, unsaved edits, scroll positions. Content
+- **In-app state.** Scrollback, unsaved edits, scroll positions — except
+  where a program can reopen its own session, which is what `[tui.resume]`
+  is for. Content
   restoration rides on each app's own persistence, which is better than you
   would expect: browsers restore their tabs, editors their sessions, document
   viewers their last file. True per-window state restoration needs the Wayland
@@ -157,7 +169,7 @@ profile_workspaces = { "Default" = "2", "Work" = "6" }
 ## Development
 
 ```sh
-cargo test        # 132 tests, no compositor required
+cargo test        # 147 tests, no compositor required
 cargo clippy --all-targets
 ```
 

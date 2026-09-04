@@ -114,10 +114,11 @@ pub fn relaunch_argv(
             let argv = process
                 .cmdline(tui)
                 .or_else(|| process.comm(tui).map(|c| vec![c]))?;
-            let argv: Vec<String> = argv
+            let mut argv: Vec<String> = argv
                 .into_iter()
                 .filter(|a| !VOLATILE_ARG_PREFIXES.iter().any(|p| a.starts_with(p)))
                 .collect();
+            argv = with_resume_args(argv, tui, process, config);
             let cwd = process
                 .cwd(tui)
                 .map(|p| p.to_string_lossy().into_owned())
@@ -170,6 +171,59 @@ pub fn split_blob_cmdline(argv: Vec<String>) -> Vec<String> {
         return argv;
     }
     argv[0].split_whitespace().map(String::from).collect()
+}
+
+/// Ask a program to reopen the session it was in.
+///
+/// The session id is recovered from the program's own open files, so several
+/// sessions of the same program in the same directory each come back as
+/// themselves rather than all resuming the newest one.
+fn with_resume_args(
+    argv: Vec<String>,
+    pid: i32,
+    process: &dyn ProcessInfoProvider,
+    config: &Config,
+) -> Vec<String> {
+    let Some(program) = process.comm(pid) else {
+        return argv;
+    };
+    let Some(rule) = config.tui.resume.get(&program) else {
+        return argv;
+    };
+
+    let open = process.open_files(pid);
+    let extra = match crate::resume::find_id(&rule.fd_glob, open.iter().map(|s| s.as_str())) {
+        Some(id) => crate::resume::render_args(&rule.args, &id),
+        None => rule.fallback.clone(),
+    };
+    if extra.is_empty() {
+        return argv;
+    }
+
+    let mut argv = strip_flags(argv, &rule.strip_flags);
+    argv.extend(extra);
+    argv
+}
+
+/// Drop `flags` from an argv, along with a value following one of them.
+fn strip_flags(argv: Vec<String>, flags: &[String]) -> Vec<String> {
+    if flags.is_empty() || argv.is_empty() {
+        return argv;
+    }
+    let mut out = vec![argv[0].clone()];
+    let mut i = 1;
+    while i < argv.len() {
+        if flags.contains(&argv[i]) {
+            i += 1;
+            if i < argv.len() && !argv[i].starts_with('-') {
+                i += 1; // the flag's value
+            }
+            continue;
+        }
+        out.push(argv[i].clone());
+        i += 1;
+    }
+    out
 }
 
 fn apply_app_overrides(argv: &mut Vec<String>, app: &AppConfig) {
@@ -281,6 +335,84 @@ mod tests {
         assert_eq!(
             argv,
             vec!["foot", "-D", "/home/rc/Work", "nvim", "src/main.rs"]
+        );
+    }
+
+    #[test]
+    fn a_resumable_tui_comes_back_on_its_own_session() {
+        let mut proc = MockProcessInfo::default();
+        proc.add(10, "foot", &["foot"], "/home/rc");
+        proc.add(11, "claude", &["claude"], "/home/rc/Work");
+        proc.link(10, 11);
+        // The session id lives in the path of a file the program holds open.
+        proc.open(
+            11,
+            &[
+                "/proc/11/statm",
+                "/tmp/claude-1000/-home-rc-Work/b8a0afc7-1374-4bad-957b-2d5eef6f50a1/tasks",
+            ],
+        );
+        let argv = relaunch_argv(&client("foot", 10), &proc, &config()).unwrap();
+        assert_eq!(
+            argv,
+            vec![
+                "foot",
+                "-D",
+                "/home/rc/Work",
+                "claude",
+                "--resume",
+                "b8a0afc7-1374-4bad-957b-2d5eef6f50a1"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unidentifiable_session_falls_back_to_continue() {
+        let mut proc = MockProcessInfo::default();
+        proc.add(10, "foot", &["foot"], "/home/rc");
+        proc.add(11, "claude", &["claude"], "/home/rc/Work");
+        proc.link(10, 11);
+        proc.open(11, &["/dev/null"]);
+        let argv = relaunch_argv(&client("foot", 10), &proc, &config()).unwrap();
+        assert_eq!(argv.last().unwrap(), "--continue");
+    }
+
+    #[test]
+    fn a_session_already_started_with_a_resume_flag_is_not_resumed_twice() {
+        let mut proc = MockProcessInfo::default();
+        proc.add(10, "foot", &["foot"], "/home/rc");
+        proc.add(11, "claude", &["claude", "--resume", "old-id", "--effort", "high"], "/home/rc");
+        proc.link(10, 11);
+        proc.open(11, &["/tmp/claude-1000/-home-rc/new-id/tasks"]);
+        let argv = relaunch_argv(&client("foot", 10), &proc, &config()).unwrap();
+        assert_eq!(
+            argv,
+            vec!["foot", "-D", "/home/rc", "claude", "--effort", "high", "--resume", "new-id"],
+            "the stale id must be replaced, and unrelated flags kept"
+        );
+    }
+
+    #[test]
+    fn a_tui_without_a_resume_rule_is_untouched() {
+        let mut proc = MockProcessInfo::default();
+        proc.add(10, "foot", &["foot"], "/home/rc");
+        proc.add(11, "btop", &["btop"], "/home/rc");
+        proc.link(10, 11);
+        proc.open(11, &["/tmp/claude-1000/x/some-id/tasks"]);
+        let argv = relaunch_argv(&client("foot", 10), &proc, &config()).unwrap();
+        assert_eq!(argv, vec!["foot", "-D", "/home/rc", "btop"]);
+    }
+
+    #[test]
+    fn strip_flags_keeps_the_binary_and_unrelated_arguments() {
+        let argv: Vec<String> = ["claude", "--resume", "id", "-c", "--effort", "high"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let flags: Vec<String> = ["--resume", "-c"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            strip_flags(argv, &flags),
+            vec!["claude", "--effort", "high"]
         );
     }
 

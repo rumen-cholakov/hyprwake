@@ -25,6 +25,15 @@ and its [Omarchy fork](https://github.com/SotoAugusto/hypr-session-restore).
 - Fixed: an argv that the process flattened into a single space-separated
   string (Chromium does this) was replayed as one unusable argument.
 
+### Session resumption
+
+- A TUI that can reopen its own session is asked to. The session id is
+  recovered from the program's open files via `/proc/<pid>/fd`, so several
+  sessions of one program in the same directory each come back as themselves
+  rather than all resuming whichever was touched last.
+- Ships with a rule for Claude Code; other programs can be described in
+  `[tui.resume.<program>]`.
+
 ### Session model
 
 - Workspaces are identified by dispatcher selector, so named workspaces and

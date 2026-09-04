@@ -15,6 +15,10 @@ pub trait ProcessInfoProvider {
     /// The process name as the kernel reports it (`/proc/<pid>/comm`).
     fn comm(&self, pid: i32) -> Option<String>;
     fn children(&self, pid: i32) -> Vec<i32>;
+    /// Regular files the process currently has open, resolved through
+    /// `/proc/<pid>/fd`. Some programs record their session identity in one
+    /// of these paths.
+    fn open_files(&self, pid: i32) -> Vec<String>;
 
     /// Breadth-first search of the process tree under `pid` for a process
     /// whose `comm` is in `names`.
@@ -68,6 +72,17 @@ impl ProcessInfoProvider for RealProcessInfo {
             .map(|s| s.trim().to_string())
     }
 
+    fn open_files(&self, pid: i32) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|e| std::fs::read_link(e.path()).ok())
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect()
+    }
+
     fn children(&self, pid: i32) -> Vec<i32> {
         let mut out = Vec::new();
         let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
@@ -97,6 +112,7 @@ pub mod mock {
         pub cwds: HashMap<i32, PathBuf>,
         pub comms: HashMap<i32, String>,
         pub children: HashMap<i32, Vec<i32>>,
+        pub open_files: HashMap<i32, Vec<String>>,
     }
 
     impl MockProcessInfo {
@@ -106,6 +122,12 @@ pub mod mock {
             self.cmdlines
                 .insert(pid, argv.iter().map(|s| s.to_string()).collect());
             self.cwds.insert(pid, PathBuf::from(cwd));
+            self
+        }
+
+        pub fn open(&mut self, pid: i32, paths: &[&str]) -> &mut Self {
+            self.open_files
+                .insert(pid, paths.iter().map(|s| s.to_string()).collect());
             self
         }
 
@@ -127,6 +149,9 @@ pub mod mock {
         }
         fn children(&self, pid: i32) -> Vec<i32> {
             self.children.get(&pid).cloned().unwrap_or_default()
+        }
+        fn open_files(&self, pid: i32) -> Vec<String> {
+            self.open_files.get(&pid).cloned().unwrap_or_default()
         }
     }
 }
@@ -209,5 +234,7 @@ mod tests {
         assert!(real.cmdline(me).is_some_and(|a| !a.is_empty()));
         assert!(real.cwd(me).is_some());
         assert!(real.comm(me).is_some());
+        // A process always has at least stdout open.
+        assert!(!real.open_files(me).is_empty());
     }
 }
