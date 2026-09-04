@@ -1,5 +1,9 @@
 # hyprwake
 
+[![CI](https://github.com/rumen-cholakov/hyprwake/actions/workflows/ci.yml/badge.svg)](https://github.com/rumen-cholakov/hyprwake/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/rumen-cholakov/hyprwake?display_name=tag&sort=semver)](https://github.com/rumen-cholakov/hyprwake/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Reopen your Hyprland session after a reboot: the same windows, on the same
 workspaces, with each terminal back in the directory it was in and running
 whatever it was running.
