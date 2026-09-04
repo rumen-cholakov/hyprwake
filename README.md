@@ -92,6 +92,7 @@ hyprwake restore [NAME]         # reopen it
 hyprwake restore --dry-run      # print every dispatch instead of running it
 hyprwake restore --max-age 7d   # skip a session older than this
 hyprwake restore --force        # restore even though windows are open
+hyprwake restore --missing-only # open only what is missing, leave the rest
 hyprwake list -v                # saved sessions, and what is in them
 hyprwake delete NAME
 
@@ -123,7 +124,8 @@ hard way:
   `save_drop_fraction = 0.0` turns it off.
 - **Restore refuses a populated desktop.** More than a few windows open means
   this is not a fresh login, and restoring would duplicate everything.
-  `--force` overrides it.
+  `--force` overrides it; `--missing-only` is usually what you actually
+  wanted — it opens what is absent and leaves everything else alone.
 - **Sessions age out.** The boot hook passes `--max-age`, so a machine that
   has been off for a week does not reopen last week's work.
 - **Everything is logged** to `~/.local/state/hyprwake/hyprwake.log`, because

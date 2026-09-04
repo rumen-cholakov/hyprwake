@@ -35,6 +35,9 @@ pub struct RestoreOptions {
     pub verbose: bool,
     /// Restore even though windows are already open.
     pub force: bool,
+    /// Launch only what is not already open, and leave existing windows
+    /// where they are.
+    pub missing_only: bool,
 }
 
 #[derive(Debug, Default)]
@@ -48,6 +51,8 @@ pub struct RestoreReport {
     pub groups_unrestored: usize,
     /// Whether the view and focus were put back.
     pub focus_restored: bool,
+    /// Windows the session wanted that were already open.
+    pub already_open: usize,
     pub details: Vec<String>,
 }
 
@@ -60,7 +65,13 @@ pub fn restore_session(
     let mut report = RestoreReport::default();
 
     let initial = live_windows(hyprctl, config)?;
-    if !opts.force && !opts.dry_run && initial.len() > config.general.abort_restore_above {
+    // Merging is the answer to a populated desktop, so it does not trip the
+    // guard that exists to stop one being duplicated.
+    if !opts.force
+        && !opts.missing_only
+        && !opts.dry_run
+        && initial.len() > config.general.abort_restore_above
+    {
         log(format!(
             "restore aborted: desktop already has {} windows",
             initial.len()
@@ -87,9 +98,32 @@ pub fn restore_session(
             .then(a.at[0].cmp(&b.at[0]))
     });
 
+    // What is already on screen, by class, so a merge can tell "this window
+    // is back" from "this window is still missing".
+    let mut already: HashMap<String, usize> = HashMap::new();
+    if opts.missing_only {
+        for window in &initial {
+            *already.entry(window.class.clone()).or_default() += 1;
+        }
+    }
+
     for client in &order {
         if !client.launch.spawn {
             continue;
+        }
+        if opts.missing_only {
+            if let Some(count) = already.get_mut(&client.class) {
+                if *count > 0 {
+                    *count -= 1;
+                    report.already_open += 1;
+                    if opts.verbose {
+                        report
+                            .details
+                            .push(format!("already open: {}", client.class));
+                    }
+                    continue;
+                }
+            }
         }
         let command = launch_command(&client.launch.argv, use_uwsm);
         let call = exec_call(&command, &client.workspace, client);
@@ -796,6 +830,71 @@ mod tests {
     }
 
     // ── end to end against the mock compositor ──
+
+    // ── merging into a live desktop ──
+
+    fn merging() -> RestoreOptions {
+        RestoreOptions {
+            missing_only: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn merging_launches_only_what_is_missing() {
+        let session = session_of(vec![
+            saved("foot", (1, "1")),
+            saved("foot", (2, "2")),
+            saved("google-chrome", (3, "3")),
+        ]);
+        // One foot is already up; the other foot and Chrome are not.
+        let hypr = MockHyprctl::new(vec![vec![live("foot", (1, "1"), "0xlive")]]);
+        let report = restore_session(&session, &hypr, &fast_config(), &merging()).unwrap();
+
+        assert_eq!(report.already_open, 1);
+        assert_eq!(report.spawned, 2);
+        let spawns: Vec<_> = hypr
+            .calls()
+            .into_iter()
+            .filter(|c| c.contains("exec_cmd"))
+            .collect();
+        assert_eq!(spawns.len(), 2);
+        assert!(spawns.iter().any(|c| c.contains("[[google-chrome]]")));
+    }
+
+    #[test]
+    fn merging_does_not_disturb_windows_that_are_already_open() {
+        let session = session_of(vec![saved("foot", (1, "1"))]);
+        // The live window sits on the wrong workspace by the session's
+        // reckoning, but the user put it there.
+        let hypr = MockHyprctl::new(vec![vec![live("foot", (7, "7"), "0xlive")]]);
+        restore_session(&session, &hypr, &fast_config(), &merging()).unwrap();
+        assert!(
+            !hypr.calls().iter().any(|c| c.contains("window.move")),
+            "an already-open window is left where the user has it"
+        );
+    }
+
+    #[test]
+    fn merging_is_allowed_on_a_populated_desktop() {
+        let session = session_of(vec![saved("code", (1, "1"))]);
+        let busy: Vec<HyprClient> = (0..6)
+            .map(|i| live("foot", (1, "1"), &format!("0x{i}")))
+            .collect();
+        let hypr = MockHyprctl::new(vec![busy]);
+        let report = restore_session(&session, &hypr, &fast_config(), &merging()).unwrap();
+        assert_eq!(report.spawned, 1, "merging is the answer to a busy desktop");
+    }
+
+    #[test]
+    fn a_second_window_of_a_class_is_still_launched() {
+        // Two terminals were saved and one is open: the other is missing.
+        let session = session_of(vec![saved("foot", (1, "1")), saved("foot", (2, "2"))]);
+        let hypr = MockHyprctl::new(vec![vec![live("foot", (1, "1"), "0xlive")]]);
+        let report = restore_session(&session, &hypr, &fast_config(), &merging()).unwrap();
+        assert_eq!(report.already_open, 1);
+        assert_eq!(report.spawned, 1);
+    }
 
     // ── focus and the active view ──
 

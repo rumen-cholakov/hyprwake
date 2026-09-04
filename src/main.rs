@@ -54,6 +54,9 @@ enum Commands {
         /// Restore even though windows are already open
         #[arg(short, long)]
         force: bool,
+        /// Open only what is missing, leaving open windows alone
+        #[arg(long)]
+        missing_only: bool,
     },
     /// List saved sessions
     List,
@@ -111,7 +114,17 @@ fn main() -> ExitCode {
             dry_run,
             max_age,
             force,
-        } => cmd_restore(name, dry_run, max_age, force, &config, &dir, cli.verbose),
+            missing_only,
+        } => cmd_restore(
+            name,
+            dry_run,
+            max_age,
+            force,
+            missing_only,
+            &config,
+            &dir,
+            cli.verbose,
+        ),
         Commands::List => cmd_list(&dir, cli.verbose),
         Commands::Delete { name } => cmd_delete(&name, &dir),
         Commands::Config { init, force } => cmd_config(init, force, &config),
@@ -186,11 +199,13 @@ fn cmd_save(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_restore(
     name: Option<String>,
     dry_run: bool,
     max_age: Option<String>,
     force: bool,
+    missing_only: bool,
     config: &Config,
     dir: &Path,
     verbose: bool,
@@ -247,6 +262,7 @@ fn cmd_restore(
         dry_run,
         verbose,
         force,
+        missing_only,
     };
     match restore_session(&session, &RealHyprctl, config, &opts) {
         Ok(report) => {
@@ -260,6 +276,15 @@ fn cmd_restore(
                     "Restored '{}': {} launched, {} placed, {} failed, {} never appeared",
                     session.name, report.spawned, report.placed, report.failed, report.unmatched
                 );
+                if report.already_open > 0 {
+                    println!("  {} window(s) were already open", report.already_open);
+                }
+                if report.groups_unrestored > 0 {
+                    println!(
+                        "  {} group(s) came back as separate windows",
+                        report.groups_unrestored
+                    );
+                }
             }
             ExitCode::SUCCESS
         }
