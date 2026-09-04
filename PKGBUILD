@@ -1,7 +1,7 @@
 # Maintainer: Rumen Cholakov <https://github.com/rumen-cholakov>
 
 pkgname=hyprwake
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Save and restore Hyprland sessions, including terminal directories and TUI sessions"
 arch=('x86_64' 'aarch64')

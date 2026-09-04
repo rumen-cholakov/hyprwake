@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1
+
+A verification release: no behaviour changes.
+
+- The package claimed x86_64 and aarch64, but nothing had ever built for ARM.
+  CI now runs the suite and a release build on a native ARM runner, so the
+  claim is tested rather than assumed. This matters for packaging: the
+  Omarchy repository builds ARM packages and runs the package's `check()`,
+  where an architecture-dependent test would surface as a failed build.
+
 ## 0.1.0
 
 First release, forked from [hyprflow](https://github.com/isorensen/hyprflow)
