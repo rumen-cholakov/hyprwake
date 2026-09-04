@@ -323,7 +323,7 @@ mod tests {
             50,
             "chrome",
             &["/opt/google/chrome/chrome", "--ozone-platform=wayland"],
-            "/home/rc",
+            "/home/user",
         );
         let argv = relaunch_argv(&client("google-chrome", 50), &proc, &config()).unwrap();
         assert_eq!(argv[0], "/opt/google/chrome/chrome");
@@ -333,39 +333,39 @@ mod tests {
     #[test]
     fn terminal_reopens_at_its_shell_directory() {
         let mut proc = MockProcessInfo::default();
-        proc.add(10, "foot", &["foot"], "/home/rc");
-        proc.add(11, "fish", &["fish"], "/home/rc/Work/hyprwake");
+        proc.add(10, "foot", &["foot"], "/home/user");
+        proc.add(11, "fish", &["fish"], "/home/user/Work/hyprwake");
         proc.link(10, 11);
         let argv = relaunch_argv(&client("foot", 10), &proc, &config()).unwrap();
-        assert_eq!(argv, vec!["foot", "-D", "/home/rc/Work/hyprwake"]);
+        assert_eq!(argv, vec!["foot", "-D", "/home/user/Work/hyprwake"]);
     }
 
     #[test]
     fn terminal_running_a_tui_reopens_the_tui() {
         let mut proc = MockProcessInfo::default();
-        proc.add(10, "foot", &["foot"], "/home/rc");
-        proc.add(11, "fish", &["fish"], "/home/rc");
-        proc.add(12, "nvim", &["nvim", "src/main.rs"], "/home/rc/Work");
+        proc.add(10, "foot", &["foot"], "/home/user");
+        proc.add(11, "fish", &["fish"], "/home/user");
+        proc.add(12, "nvim", &["nvim", "src/main.rs"], "/home/user/Work");
         proc.link(10, 11).link(11, 12);
         let argv = relaunch_argv(&client("foot", 10), &proc, &config()).unwrap();
         assert_eq!(
             argv,
-            vec!["foot", "-D", "/home/rc/Work", "nvim", "src/main.rs"]
+            vec!["foot", "-D", "/home/user/Work", "nvim", "src/main.rs"]
         );
     }
 
     #[test]
     fn a_resumable_tui_comes_back_on_its_own_session() {
         let mut proc = MockProcessInfo::default();
-        proc.add(10, "foot", &["foot"], "/home/rc");
-        proc.add(11, "claude", &["claude"], "/home/rc/Work");
+        proc.add(10, "foot", &["foot"], "/home/user");
+        proc.add(11, "claude", &["claude"], "/home/user/Work");
         proc.link(10, 11);
         // The session id lives in the path of a file the program holds open.
         proc.open(
             11,
             &[
                 "/proc/11/statm",
-                "/tmp/claude-1000/-home-rc-Work/b8a0afc7-1374-4bad-957b-2d5eef6f50a1/tasks",
+                "/tmp/claude-1000/-home-user-Work/0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0/tasks",
             ],
         );
         let argv = relaunch_argv(&client("foot", 10), &proc, &config()).unwrap();
@@ -374,10 +374,10 @@ mod tests {
             vec![
                 "foot",
                 "-D",
-                "/home/rc/Work",
+                "/home/user/Work",
                 "claude",
                 "--resume",
-                "b8a0afc7-1374-4bad-957b-2d5eef6f50a1"
+                "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
             ]
         );
     }
@@ -385,8 +385,8 @@ mod tests {
     #[test]
     fn an_unidentifiable_session_falls_back_to_continue() {
         let mut proc = MockProcessInfo::default();
-        proc.add(10, "foot", &["foot"], "/home/rc");
-        proc.add(11, "claude", &["claude"], "/home/rc/Work");
+        proc.add(10, "foot", &["foot"], "/home/user");
+        proc.add(11, "claude", &["claude"], "/home/user/Work");
         proc.link(10, 11);
         proc.open(11, &["/dev/null"]);
         let argv = relaunch_argv(&client("foot", 10), &proc, &config()).unwrap();
@@ -396,19 +396,28 @@ mod tests {
     #[test]
     fn a_session_already_started_with_a_resume_flag_is_not_resumed_twice() {
         let mut proc = MockProcessInfo::default();
-        proc.add(10, "foot", &["foot"], "/home/rc");
+        proc.add(10, "foot", &["foot"], "/home/user");
         proc.add(
             11,
             "claude",
             &["claude", "--resume", "old-id", "--effort", "high"],
-            "/home/rc",
+            "/home/user",
         );
         proc.link(10, 11);
-        proc.open(11, &["/tmp/claude-1000/-home-rc/new-id/tasks"]);
+        proc.open(11, &["/tmp/claude-1000/-home-user/new-id/tasks"]);
         let argv = relaunch_argv(&client("foot", 10), &proc, &config()).unwrap();
         assert_eq!(
             argv,
-            vec!["foot", "-D", "/home/rc", "claude", "--effort", "high", "--resume", "new-id"],
+            vec![
+                "foot",
+                "-D",
+                "/home/user",
+                "claude",
+                "--effort",
+                "high",
+                "--resume",
+                "new-id"
+            ],
             "the stale id must be replaced, and unrelated flags kept"
         );
     }
@@ -435,7 +444,7 @@ mod tests {
         cfg.tui.programs.push("myagent".to_string());
 
         let mut proc = MockProcessInfo::default();
-        proc.add(10, "foot", &["foot"], "/home/rc");
+        proc.add(10, "foot", &["foot"], "/home/user");
         proc.add(11, "myagent", &["myagent"], "/tmp/x");
         proc.link(10, 11);
 
@@ -462,7 +471,7 @@ mod tests {
         cfg.tui.programs.push("myagent".to_string());
 
         let mut proc = MockProcessInfo::default();
-        proc.add(10, "foot", &["foot"], "/home/rc");
+        proc.add(10, "foot", &["foot"], "/home/user");
         proc.add(11, "myagent", &["myagent"], "/tmp/x");
         proc.link(10, 11);
 
@@ -473,12 +482,12 @@ mod tests {
     #[test]
     fn a_tui_without_a_resume_rule_is_untouched() {
         let mut proc = MockProcessInfo::default();
-        proc.add(10, "foot", &["foot"], "/home/rc");
-        proc.add(11, "btop", &["btop"], "/home/rc");
+        proc.add(10, "foot", &["foot"], "/home/user");
+        proc.add(11, "btop", &["btop"], "/home/user");
         proc.link(10, 11);
         proc.open(11, &["/tmp/claude-1000/x/some-id/tasks"]);
         let argv = relaunch_argv(&client("foot", 10), &proc, &config()).unwrap();
-        assert_eq!(argv, vec!["foot", "-D", "/home/rc", "btop"]);
+        assert_eq!(argv, vec!["foot", "-D", "/home/user", "btop"]);
     }
 
     #[test]
@@ -497,16 +506,16 @@ mod tests {
     #[test]
     fn volatile_tui_arguments_are_dropped() {
         let mut proc = MockProcessInfo::default();
-        proc.add(10, "foot", &["foot"], "/home/rc");
+        proc.add(10, "foot", &["foot"], "/home/user");
         proc.add(
             11,
             "yazi",
             &["yazi", "--cwd-file=/run/user/1000/yazi-cwd.XXXX"],
-            "/home/rc/Downloads",
+            "/home/user/Downloads",
         );
         proc.link(10, 11);
         let argv = relaunch_argv(&client("foot", 10), &proc, &config()).unwrap();
-        assert_eq!(argv, vec!["foot", "-D", "/home/rc/Downloads", "yazi"]);
+        assert_eq!(argv, vec!["foot", "-D", "/home/user/Downloads", "yazi"]);
     }
 
     #[test]
@@ -530,8 +539,8 @@ mod tests {
 
     #[test]
     fn a_path_with_spaces_is_left_alone() {
-        // "/home/rc/my" is not an executable, so this is one real argument.
-        let argv = vec!["/home/rc/my program".to_string()];
+        // "/home/user/my" is not an executable, so this is one real argument.
+        let argv = vec!["/home/user/my program".to_string()];
         assert_eq!(split_blob_cmdline(argv.clone()), argv);
     }
 
@@ -585,7 +594,7 @@ mod tests {
         let mut proc = MockProcessInfo::default();
         proc.add(20, "waybar", &["waybar"], "/");
         proc.add(21, "foot", &["foot"], "/");
-        proc.add(22, "foot", &["foot"], "/home/rc");
+        proc.add(22, "foot", &["foot"], "/home/user");
 
         let hypr = MockHyprctl::new(vec![vec![bar, hidden, client("foot", 22)]]);
         let session = capture_session("latest", &hypr, &proc, &config()).unwrap();
@@ -596,7 +605,7 @@ mod tests {
     #[test]
     fn only_the_first_window_of_a_process_is_spawned() {
         let mut proc = MockProcessInfo::default();
-        proc.add(90, "chrome", &["/opt/google/chrome/chrome"], "/home/rc");
+        proc.add(90, "chrome", &["/opt/google/chrome/chrome"], "/home/user");
         let hypr = MockHyprctl::new(vec![vec![
             client("google-chrome", 90),
             client("google-chrome", 90),
@@ -635,7 +644,7 @@ mod tests {
         let mut scratch = client("foot", 30);
         scratch.workspace = WorkspaceRef::new(-99, "special:magic");
         let mut proc = MockProcessInfo::default();
-        proc.add(30, "foot", &["foot"], "/home/rc");
+        proc.add(30, "foot", &["foot"], "/home/user");
         let hypr = MockHyprctl::new(vec![vec![scratch]]);
         let session = capture_session("latest", &hypr, &proc, &config()).unwrap();
         assert_eq!(
@@ -648,7 +657,7 @@ mod tests {
     #[test]
     fn monitor_ids_resolve_to_names() {
         let mut proc = MockProcessInfo::default();
-        proc.add(40, "foot", &["foot"], "/home/rc");
+        proc.add(40, "foot", &["foot"], "/home/user");
         let hypr = MockHyprctl::new(vec![vec![client("foot", 40)]]);
         let session = capture_session("latest", &hypr, &proc, &config()).unwrap();
         assert_eq!(session.clients[0].monitor, "eDP-1");

@@ -168,13 +168,13 @@ mod tests {
     /// foot(10) -> fish(11) -> nvim(12)
     fn terminal_tree() -> MockProcessInfo {
         let mut m = MockProcessInfo::default();
-        m.add(10, "foot", &["foot"], "/home/rc");
-        m.add(11, "fish", &["fish"], "/home/rc/Work");
+        m.add(10, "foot", &["foot"], "/home/user");
+        m.add(11, "fish", &["fish"], "/home/user/Work");
         m.add(
             12,
             "nvim",
             &["nvim", "src/main.rs"],
-            "/home/rc/Work/hyprwake",
+            "/home/user/Work/hyprwake",
         );
         m.link(10, 11).link(11, 12);
         m

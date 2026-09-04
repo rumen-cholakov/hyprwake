@@ -68,18 +68,22 @@ mod tests {
 
     #[test]
     fn shell_join_leaves_simple_args_bare() {
-        let argv = vec!["foot".to_string(), "-D".to_string(), "/home/rc".to_string()];
-        assert_eq!(shell_join(&argv), "foot -D /home/rc");
+        let argv = vec![
+            "foot".to_string(),
+            "-D".to_string(),
+            "/home/user".to_string(),
+        ];
+        assert_eq!(shell_join(&argv), "foot -D /home/user");
     }
 
     #[test]
     fn shell_join_quotes_spaces_and_apostrophes() {
         let argv = vec![
             "nvim".to_string(),
-            "/home/rc/my notes".to_string(),
+            "/home/user/my notes".to_string(),
             "it's".to_string(),
         ];
-        assert_eq!(shell_join(&argv), r#"nvim '/home/rc/my notes' 'it'\''s'"#);
+        assert_eq!(shell_join(&argv), r#"nvim '/home/user/my notes' 'it'\''s'"#);
     }
 
     #[test]

@@ -527,8 +527,11 @@ mod tests {
     #[test]
     fn foot_argv_uses_separate_directory_argument() {
         let c: Config = toml::from_str("").unwrap();
-        let argv = c.terminal_for("foot").unwrap().build_argv("/home/rc", None);
-        assert_eq!(argv, vec!["foot", "-D", "/home/rc"]);
+        let argv = c
+            .terminal_for("foot")
+            .unwrap()
+            .build_argv("/home/user", None);
+        assert_eq!(argv, vec!["foot", "-D", "/home/user"]);
     }
 
     #[test]

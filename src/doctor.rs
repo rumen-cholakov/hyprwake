@@ -304,7 +304,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let config: Config = toml::from_str("").unwrap();
         let mut proc = MockProcessInfo::default();
-        proc.add(1, "foot", &["foot"], "/home/rc");
+        proc.add(1, "foot", &["foot"], "/home/user");
         proc.add(2, "waybar", &["waybar"], "/");
         let hypr = MockHyprctl::new(vec![vec![window("foot", 1), window("waybar", 2)]]);
 

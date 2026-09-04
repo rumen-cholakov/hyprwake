@@ -6,7 +6,7 @@
 //! `claude --resume <session-id>` reopens that exact conversation.
 //!
 //! ```text
-//! /tmp/claude-1000/-home-rc-Work/b8a0afc7-.../tasks  ->  b8a0afc7-...
+//! /tmp/claude-1000/-home-user-Work/0f1e2d3c-.../tasks  ->  0f1e2d3c-...
 //! ```
 //!
 //! Other programs keep their session index in a database instead, with no
@@ -147,13 +147,14 @@ mod tests {
     use super::*;
 
     const PATTERN: &str = "/tmp/claude-*/*/{id}/*";
-    const REAL: &str = "/tmp/claude-1000/-home-rc-Work/b8a0afc7-1374-4bad-957b-2d5eef6f50a1/tasks";
+    const REAL: &str =
+        "/tmp/claude-1000/-home-user-Work/0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0/tasks";
 
     #[test]
     fn captures_the_session_id_from_a_real_path() {
         assert_eq!(
             extract_id(PATTERN, REAL).as_deref(),
-            Some("b8a0afc7-1374-4bad-957b-2d5eef6f50a1")
+            Some("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0")
         );
     }
 
@@ -202,7 +203,7 @@ mod tests {
         let open = vec!["/proc/3986/statm", "/dev/null", REAL];
         assert_eq!(
             find_id(PATTERN, open).as_deref(),
-            Some("b8a0afc7-1374-4bad-957b-2d5eef6f50a1")
+            Some("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0")
         );
     }
 
@@ -243,8 +244,8 @@ mod tests {
             "q {home} '{cwd_sql}' {cwd}".to_string(),
         ];
         assert_eq!(
-            render_command(&cmd, "/home/rc/Work", "/home/rc")[2],
-            "q /home/rc '/home/rc/Work' /home/rc/Work"
+            render_command(&cmd, "/home/user/Work", "/home/user")[2],
+            "q /home/user '/home/user/Work' /home/user/Work"
         );
     }
 
@@ -252,8 +253,8 @@ mod tests {
     fn a_quote_in_a_directory_cannot_escape_a_sql_literal() {
         let cmd = vec!["q '{cwd_sql}'".to_string()];
         assert_eq!(
-            render_command(&cmd, "/home/rc/it's", "/home/rc")[0],
-            "q '/home/rc/it''s'"
+            render_command(&cmd, "/home/user/it's", "/home/user")[0],
+            "q '/home/user/it''s'"
         );
     }
 
