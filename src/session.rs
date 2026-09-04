@@ -46,6 +46,11 @@ pub struct SessionClient {
     pub fullscreen: u8,
     #[serde(default)]
     pub focus_history_id: i32,
+    /// Index of the window group this belonged to, shared by its members.
+    ///
+    /// Recorded but not reassembled on restore: see `restore::grouped_sets`.
+    #[serde(default)]
+    pub group: Option<u32>,
     pub launch: LaunchInfo,
 }
 
@@ -221,6 +226,7 @@ mod tests {
             pinned: false,
             fullscreen: 0,
             focus_history_id: 0,
+            group: None,
             launch: LaunchInfo {
                 argv: vec![class.to_string()],
                 spawn: true,

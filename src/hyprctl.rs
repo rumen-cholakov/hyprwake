@@ -31,6 +31,10 @@ pub struct HyprClient {
     pub pid: i32,
     #[serde(default = "default_true")]
     pub mapped: bool,
+    /// Addresses of every window in this window's group, empty when it is
+    /// not grouped.
+    #[serde(default)]
+    pub grouped: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -239,6 +243,7 @@ mod tests {
             focus_history_id: 0,
             pid: 100,
             mapped: true,
+            grouped: vec![],
         }
     }
 

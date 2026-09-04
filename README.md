@@ -176,6 +176,14 @@ profile_workspaces = { "Default" = "2", "Work" = "6" }
 
 ## What it cannot do
 
+- **Window groups.** Membership is recorded, but the members come back as
+  separate windows on the right workspace rather than regrouped, and the
+  restore report says which groups those were. Hyprland 0.56 has no way to
+  put a window into an existing group by address: `into_group` acts on the
+  focused window and takes a direction — which does not merge adjacent groups
+  in practice — and the `group` spawn rule joins whatever is focused, which a
+  silent restore never is. The data is captured so this becomes a small change
+  the day a targeted dispatcher exists.
 - **Exact tiling layout.** Hyprland does not expose the dwindle/master split
   tree. Windows return to the right workspace in their old reading order and
   re-tile from there — close, but not split-for-split identical. Floating

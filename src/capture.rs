@@ -45,6 +45,8 @@ pub fn capture_session(
     // Classes whose windows the browser itself will reopen, one per profile.
     let profile_driven: HashSet<&str> = browser_profiles.iter().map(|p| p.class.as_str()).collect();
 
+    let group_ids = group_indices(&raw_clients);
+
     let mut clients = Vec::new();
     let mut seen_pids = HashSet::new();
 
@@ -78,6 +80,7 @@ pub fn capture_session(
             pinned: raw.pinned,
             fullscreen: raw.fullscreen,
             focus_history_id: raw.focus_history_id,
+            group: group_ids.get(&raw.address).copied(),
             launch: LaunchInfo { argv, spawn },
         });
     }
@@ -98,6 +101,36 @@ pub fn capture_session(
         clients,
         browser_profiles,
     })
+}
+
+/// Assign a stable index to each window group, keyed by window address.
+///
+/// Every member of a group reports the same member list, so the sorted list
+/// identifies the group. The indices are per-snapshot; they exist so members
+/// can be recognised as belonging together, not to be matched across
+/// sessions.
+fn group_indices(clients: &[HyprClient]) -> HashMap<String, u32> {
+    let mut keys: Vec<String> = Vec::new();
+    let mut out = HashMap::new();
+    for client in clients {
+        if client.grouped.len() < 2 {
+            // A group of one is Hyprland's representation of a window that
+            // merely has a group bar; there is nothing to remember.
+            continue;
+        }
+        let mut members = client.grouped.clone();
+        members.sort();
+        let key = members.join(",");
+        let index = match keys.iter().position(|k| k == &key) {
+            Some(i) => i,
+            None => {
+                keys.push(key);
+                keys.len() - 1
+            }
+        };
+        out.insert(client.address.clone(), index as u32);
+    }
+    out
 }
 
 /// The argv that recreates this window's process, or `None` when there is
@@ -309,6 +342,7 @@ mod tests {
             focus_history_id: 0,
             pid,
             mapped: true,
+            grouped: vec![],
         }
     }
 
@@ -524,6 +558,80 @@ mod tests {
         proc.add(10, "foot", &["foot"], "/var/tmp");
         let argv = relaunch_argv(&client("foot", 10), &proc, &config()).unwrap();
         assert_eq!(argv, vec!["foot", "-D", "/var/tmp"]);
+    }
+
+    #[test]
+    fn group_membership_is_recorded() {
+        let mut a = client("foot", 1);
+        let mut b = client("foot", 2);
+        a.address = "0xa".into();
+        b.address = "0xb".into();
+        a.grouped = vec!["0xa".into(), "0xb".into()];
+        b.grouped = vec!["0xb".into(), "0xa".into()]; // order differs per member
+        let mut proc = MockProcessInfo::default();
+        proc.add(1, "foot", &["foot"], "/home/user");
+        proc.add(2, "foot", &["foot"], "/home/user");
+
+        let session = capture_session(
+            "latest",
+            &MockHyprctl::new(vec![vec![a, b]]),
+            &proc,
+            &config(),
+        )
+        .unwrap();
+        assert_eq!(session.clients[0].group, Some(0));
+        assert_eq!(
+            session.clients[1].group,
+            Some(0),
+            "both members belong to the same group regardless of listing order"
+        );
+    }
+
+    #[test]
+    fn separate_groups_get_separate_indices() {
+        let mut a = client("foot", 1);
+        let mut b = client("foot", 2);
+        let mut c = client("foot", 3);
+        let mut d = client("foot", 4);
+        for (w, addr) in [
+            (&mut a, "0xa"),
+            (&mut b, "0xb"),
+            (&mut c, "0xc"),
+            (&mut d, "0xd"),
+        ] {
+            w.address = addr.into();
+        }
+        a.grouped = vec!["0xa".into(), "0xb".into()];
+        b.grouped = vec!["0xa".into(), "0xb".into()];
+        c.grouped = vec!["0xc".into(), "0xd".into()];
+        d.grouped = vec!["0xc".into(), "0xd".into()];
+        let mut proc = MockProcessInfo::default();
+        for pid in 1..=4 {
+            proc.add(pid, "foot", &["foot"], "/home/user");
+        }
+        let session = capture_session(
+            "latest",
+            &MockHyprctl::new(vec![vec![a, b, c, d]]),
+            &proc,
+            &config(),
+        )
+        .unwrap();
+        let groups: Vec<_> = session.clients.iter().map(|c| c.group).collect();
+        assert_eq!(groups, vec![Some(0), Some(0), Some(1), Some(1)]);
+    }
+
+    #[test]
+    fn a_lone_window_with_a_group_bar_is_not_a_group() {
+        // Hyprland reports a single-member "group" for a window that merely
+        // carries a group bar; there is nothing to remember about that.
+        let mut a = client("foot", 1);
+        a.address = "0xa".into();
+        a.grouped = vec!["0xa".into()];
+        let mut proc = MockProcessInfo::default();
+        proc.add(1, "foot", &["foot"], "/home/user");
+        let session =
+            capture_session("latest", &MockHyprctl::new(vec![vec![a]]), &proc, &config()).unwrap();
+        assert_eq!(session.clients[0].group, None);
     }
 
     #[test]

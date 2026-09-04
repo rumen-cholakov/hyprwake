@@ -44,6 +44,8 @@ pub struct RestoreReport {
     pub failed: usize,
     pub unmatched: usize,
     pub monitors_placed: usize,
+    /// Groups whose members were restored but not regrouped.
+    pub groups_unrestored: usize,
     pub details: Vec<String>,
 }
 
@@ -125,11 +127,13 @@ pub fn restore_session(
 
     if opts.dry_run {
         restore_workspace_monitors(session, hyprctl, opts, &mut report);
+        report_groups(session, opts, &mut report);
         return Ok(report);
     }
 
     sweep(session, hyprctl, config, opts, initial, &mut report)?;
     restore_workspace_monitors(session, hyprctl, opts, &mut report);
+    report_groups(session, opts, &mut report);
     log(format!(
         "restore done: spawned={} placed={} failed={} unmatched={}",
         report.spawned, report.placed, report.failed, report.unmatched
@@ -278,6 +282,25 @@ fn needs_placement(saved: &SessionClient, window: &crate::hyprctl::HyprClient) -
     misplaced || geometry_off || saved.fullscreen > 0 || saved.pinned
 }
 
+/// The window groups recorded in a session, as sets of client indices.
+///
+/// Hyprland 0.56 offers no way to put a window into an existing group by
+/// address: `into_group` acts on the focused window and takes a direction,
+/// and the `group` spawn rule joins whatever is focused, which a silent
+/// restore never is. Members therefore come back on the right workspace, in
+/// their old order, but ungrouped -- and the restore says so rather than
+/// leaving the user to notice.
+pub fn grouped_sets(session: &Session) -> BTreeMap<u32, Vec<usize>> {
+    let mut sets: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+    for (index, client) in session.clients.iter().enumerate() {
+        if let Some(group) = client.group {
+            sets.entry(group).or_default().push(index);
+        }
+    }
+    sets.retain(|_, members| members.len() > 1);
+    sets
+}
+
 /// Which monitor each workspace belonged to, decided by majority of the
 /// windows saved on it.
 ///
@@ -356,6 +379,29 @@ fn restore_workspace_monitors(
                 }
             }
             Err(e) => log(format!("workspace {workspace} → {monitor} failed: {e}")),
+        }
+    }
+}
+
+fn report_groups(session: &Session, opts: &RestoreOptions, report: &mut RestoreReport) {
+    let sets = grouped_sets(session);
+    if sets.is_empty() {
+        return;
+    }
+    report.groups_unrestored = sets.len();
+    for (group, members) in &sets {
+        let classes: Vec<&str> = members
+            .iter()
+            .map(|i| session.clients[*i].class.as_str())
+            .collect();
+        let msg = format!(
+            "group {group} ({}) restored as separate windows: Hyprland has no \
+             dispatcher to regroup them",
+            classes.join(", ")
+        );
+        log(msg.clone());
+        if opts.verbose || opts.dry_run {
+            report.details.push(msg);
         }
     }
 }
@@ -479,6 +525,7 @@ mod tests {
             pinned: false,
             fullscreen: 0,
             focus_history_id: 0,
+            group: None,
             launch: LaunchInfo {
                 argv: vec![class.to_string()],
                 spawn: true,
@@ -502,6 +549,7 @@ mod tests {
             focus_history_id: 0,
             pid: 1,
             mapped: true,
+            grouped: vec![],
         }
     }
 
@@ -679,6 +727,48 @@ mod tests {
     }
 
     // ── end to end against the mock compositor ──
+
+    // ── groups ──
+
+    #[test]
+    fn grouped_clients_are_collected_into_sets() {
+        let mut a = saved("foot", (1, "1"));
+        let mut b = saved("foot", (1, "1"));
+        let c = saved("code", (2, "2"));
+        a.group = Some(0);
+        b.group = Some(0);
+        let session = session_of(vec![a, b, c]);
+        let sets = grouped_sets(&session);
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets.get(&0).unwrap(), &vec![0, 1]);
+    }
+
+    #[test]
+    fn a_group_that_lost_all_but_one_member_is_not_a_group() {
+        let mut a = saved("foot", (1, "1"));
+        a.group = Some(3);
+        assert!(grouped_sets(&session_of(vec![a])).is_empty());
+    }
+
+    #[test]
+    fn restore_reports_groups_it_cannot_reassemble() {
+        let mut a = saved("foot", (1, "1"));
+        let mut b = saved("foot", (1, "1"));
+        a.group = Some(0);
+        b.group = Some(0);
+        let session = session_of(vec![a, b]);
+        let hypr = MockHyprctl::new(vec![vec![]]);
+        let opts = RestoreOptions {
+            verbose: true,
+            ..Default::default()
+        };
+        let report = restore_session(&session, &hypr, &fast_config(), &opts).unwrap();
+        assert_eq!(report.groups_unrestored, 1);
+        assert!(
+            report.details.iter().any(|d| d.contains("group 0")),
+            "the user should be told the windows came back ungrouped"
+        );
+    }
 
     // ── multi-monitor ──
 

@@ -88,6 +88,7 @@ mod tests {
                     pinned: false,
                     fullscreen: 0,
                     focus_history_id: 0,
+                    group: None,
                     launch: LaunchInfo {
                         argv: vec![format!("app{i}")],
                         spawn: true,
