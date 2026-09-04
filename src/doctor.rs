@@ -221,6 +221,29 @@ pub fn run(
         });
     }
 
+    let service_dir = crate::service::systemd_user_dir();
+    if crate::service::is_installed(&service_dir) {
+        let active = crate::service::is_active();
+        checks.push(Check::new(
+            "watcher service",
+            if active { Status::Ok } else { Status::Warn },
+            if active {
+                "running, and restarted if it dies".to_string()
+            } else {
+                format!(
+                    "installed but not running: systemctl --user start {}",
+                    crate::service::UNIT
+                )
+            },
+        ));
+    } else {
+        checks.push(Check::new(
+            "watcher service",
+            Status::Warn,
+            "not installed; `hyprwake install` adds a unit that keeps it alive",
+        ));
+    }
+
     let timer_dir = crate::autosave::systemd_user_dir();
     if crate::autosave::is_installed(&timer_dir) {
         let active = crate::autosave::is_active();

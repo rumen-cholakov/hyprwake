@@ -46,7 +46,13 @@ pub fn watch_hook_body(binary: &str) -> String {
         "#!/bin/bash\n\
          # Save the session whenever the window layout settles, so any exit\n\
          # path — clean logout, crash, power loss — has a fresh snapshot.\n\
-         setsid {binary} watch >/dev/null 2>&1 &\n"
+         #\n\
+         # Prefer the user unit: it is restarted if the watcher dies, which a\n\
+         # detached process is not. Falling back keeps this working on a\n\
+         # system where the unit was never installed.\n\
+         systemctl --user start {unit} 2>/dev/null || \\\n\
+         \x20 setsid {binary} watch --replace >/dev/null 2>&1 &\n",
+        unit = crate::service::UNIT
     )
 }
 
@@ -160,6 +166,16 @@ mod tests {
         assert!(
             body.trim_end().ends_with('&'),
             "must not block the hook runner"
+        );
+    }
+
+    #[test]
+    fn the_watch_hook_prefers_the_unit_and_can_fall_back() {
+        let body = watch_hook_body("hyprwake");
+        assert!(body.contains("systemctl --user start hyprwake-watch.service"));
+        assert!(
+            body.contains("setsid hyprwake watch --replace"),
+            "a machine without the unit installed must still get a watcher"
         );
     }
 

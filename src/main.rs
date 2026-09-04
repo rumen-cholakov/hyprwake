@@ -7,6 +7,7 @@ use hyprwake::omarchy;
 use hyprwake::process::RealProcessInfo;
 use hyprwake::restore::{restore_session, RestoreOptions};
 use hyprwake::save::{perform_save, SaveOutcome};
+use hyprwake::service;
 use hyprwake::session::{
     delete_session, list_autosave_sessions, list_sessions, load_session, parse_max_age,
     session_exists, SessionError,
@@ -524,8 +525,30 @@ fn cmd_autosave(
     ExitCode::SUCCESS
 }
 
+/// Install the watcher unit and report what happened.
+fn install_watch_service() {
+    let dir = service::systemd_user_dir();
+    match service::install(&dir) {
+        Ok(path) => {
+            println!("Wrote {}", path.display());
+            if service::enable() {
+                println!("Started {} (restarts itself if it dies)", service::UNIT);
+            } else {
+                println!(
+                    "Enable it with: systemctl --user enable --now {}",
+                    service::UNIT
+                );
+            }
+        }
+        Err(e) => eprintln!("hyprwake: could not write the watcher unit: {e}"),
+    }
+}
+
 fn cmd_install(max_age: &str) -> ExitCode {
+    install_watch_service();
+
     if !omarchy::is_omarchy() {
+        println!();
         println!("This is not an Omarchy system, so there are no hooks to install.");
         println!("Add this to your Hyprland startup instead:\n");
         println!("{}", omarchy::autostart_snippet(max_age));
@@ -553,6 +576,11 @@ fn cmd_install(max_age: &str) -> ExitCode {
 }
 
 fn cmd_uninstall() -> ExitCode {
+    match service::uninstall(&service::systemd_user_dir()) {
+        Ok(true) => println!("Removed {}", service::UNIT),
+        Ok(false) => {}
+        Err(e) => eprintln!("hyprwake: could not remove the watcher unit: {e}"),
+    }
     let Some(hooks) = omarchy::hooks_dir() else {
         println!("Nothing to remove.");
         return ExitCode::SUCCESS;

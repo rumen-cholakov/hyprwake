@@ -69,7 +69,11 @@ Then wire it into the desktop:
 hyprwake install
 ```
 
-On Omarchy that drops three hooks: restore and the watcher into
+That installs a systemd user unit for the watcher — bound to
+`graphical-session.target`, `Restart=always`, so a watcher that dies comes
+back instead of leaving you unprotected until the next reboot.
+
+On Omarchy it also drops three hooks: restore and the watcher into
 `post-boot.d`, and an exact snapshot into `post-update.d` so the
 update-then-reboot path always has a fresh session. On plain Hyprland the same
 command prints the `autostart.lua` snippet to paste instead.
@@ -229,7 +233,8 @@ build leaves the previously installed binary alone.
 
 The watcher is single-instance: a second `hyprwake watch` refuses to start,
 and `--replace` takes over from the running one, so "make sure it is running"
-is safe to say twice.
+is safe to say twice. That is also what lets the systemd unit take over from
+a watcher you started by hand.
 
 ## Packaging
 
