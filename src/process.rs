@@ -1,157 +1,213 @@
+//! Reading process state out of /proc.
+//!
+//! The window manager knows a window's pid and nothing else about how it was
+//! started. `/proc/<pid>/cmdline` is the only faithful record of that, which
+//! is why relaunch commands are derived from it rather than guessed from the
+//! window class.
+
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-#[derive(Debug, thiserror::Error)]
-pub enum ProcessError {
-    #[error("process {0} not found")]
-    NotFound(u32),
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
-}
-
-#[derive(Debug, Clone)]
-pub struct ChildProcess {
-    pub pid: u32,
-    pub cwd: PathBuf,
-    pub cmdline: String,
-}
-
 pub trait ProcessInfoProvider {
-    fn get_cwd(&self, pid: u32) -> Result<PathBuf, ProcessError>;
-    fn get_children(&self, pid: u32) -> Result<Vec<ChildProcess>, ProcessError>;
+    /// Full argv of a process, or `None` when it is gone or unreadable.
+    fn cmdline(&self, pid: i32) -> Option<Vec<String>>;
+    fn cwd(&self, pid: i32) -> Option<PathBuf>;
+    /// The process name as the kernel reports it (`/proc/<pid>/comm`).
+    fn comm(&self, pid: i32) -> Option<String>;
+    fn children(&self, pid: i32) -> Vec<i32>;
+
+    /// Breadth-first search of the process tree under `pid` for a process
+    /// whose `comm` is in `names`.
+    ///
+    /// Depth is bounded because a terminal running a shell running a
+    /// multiplexer can nest arbitrarily, and the interesting programs live
+    /// within a few levels.
+    fn find_descendant(&self, pid: i32, names: &BTreeSet<String>, max_depth: usize) -> Option<i32> {
+        let mut queue: Vec<(i32, usize)> = self.children(pid).into_iter().map(|c| (c, 1)).collect();
+        let mut head = 0;
+        while head < queue.len() {
+            let (current, depth) = queue[head];
+            head += 1;
+            if let Some(name) = self.comm(current) {
+                if names.contains(&name) {
+                    return Some(current);
+                }
+            }
+            if depth < max_depth {
+                queue.extend(self.children(current).into_iter().map(|c| (c, depth + 1)));
+            }
+        }
+        None
+    }
 }
 
 pub struct RealProcessInfo;
 
 impl ProcessInfoProvider for RealProcessInfo {
-    fn get_cwd(&self, pid: u32) -> Result<PathBuf, ProcessError> {
-        std::fs::read_link(format!("/proc/{pid}/cwd")).map_err(|_| ProcessError::NotFound(pid))
+    fn cmdline(&self, pid: i32) -> Option<Vec<String>> {
+        let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+        let argv: Vec<String> = raw
+            .split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .collect();
+        if argv.is_empty() {
+            None
+        } else {
+            Some(argv)
+        }
     }
 
-    fn get_children(&self, pid: u32) -> Result<Vec<ChildProcess>, ProcessError> {
-        let mut children = Vec::new();
-        let tasks_dir = format!("/proc/{pid}/task");
-        let tasks = std::fs::read_dir(&tasks_dir).map_err(|_| ProcessError::NotFound(pid))?;
+    fn cwd(&self, pid: i32) -> Option<PathBuf> {
+        std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+    }
 
+    fn comm(&self, pid: i32) -> Option<String> {
+        std::fs::read_to_string(format!("/proc/{pid}/comm"))
+            .ok()
+            .map(|s| s.trim().to_string())
+    }
+
+    fn children(&self, pid: i32) -> Vec<i32> {
+        let mut out = Vec::new();
+        let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+            return out;
+        };
         for task in tasks.flatten() {
-            let children_file = task.path().join("children");
-            if let Ok(content) = std::fs::read_to_string(&children_file) {
-                for child_pid_str in content.split_whitespace() {
-                    if let Ok(child_pid) = child_pid_str.parse::<u32>() {
-                        let cwd = self.get_cwd(child_pid).unwrap_or_default();
-                        let cmdline = read_cmdline(child_pid);
-                        children.push(ChildProcess {
-                            pid: child_pid,
-                            cwd,
-                            cmdline,
-                        });
-                    }
-                }
+            if let Ok(content) = std::fs::read_to_string(task.path().join("children")) {
+                out.extend(
+                    content
+                        .split_whitespace()
+                        .filter_map(|p| p.parse::<i32>().ok()),
+                );
             }
         }
-        Ok(children)
+        out
     }
 }
 
-fn read_cmdline(pid: u32) -> String {
-    std::fs::read(format!("/proc/{pid}/cmdline"))
-        .ok()
-        .map(|bytes| {
-            bytes
-                .split(|&b| b == 0)
-                .filter_map(|s| std::str::from_utf8(s).ok())
-                .next()
-                .unwrap_or("")
-                .to_string()
-        })
-        .unwrap_or_default()
+#[cfg(any(test, feature = "testing"))]
+pub mod mock {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[derive(Default)]
+    pub struct MockProcessInfo {
+        pub cmdlines: HashMap<i32, Vec<String>>,
+        pub cwds: HashMap<i32, PathBuf>,
+        pub comms: HashMap<i32, String>,
+        pub children: HashMap<i32, Vec<i32>>,
+    }
+
+    impl MockProcessInfo {
+        /// Register a process; `parent` links it into the tree.
+        pub fn add(&mut self, pid: i32, comm: &str, argv: &[&str], cwd: &str) -> &mut Self {
+            self.comms.insert(pid, comm.to_string());
+            self.cmdlines
+                .insert(pid, argv.iter().map(|s| s.to_string()).collect());
+            self.cwds.insert(pid, PathBuf::from(cwd));
+            self
+        }
+
+        pub fn link(&mut self, parent: i32, child: i32) -> &mut Self {
+            self.children.entry(parent).or_default().push(child);
+            self
+        }
+    }
+
+    impl ProcessInfoProvider for MockProcessInfo {
+        fn cmdline(&self, pid: i32) -> Option<Vec<String>> {
+            self.cmdlines.get(&pid).cloned()
+        }
+        fn cwd(&self, pid: i32) -> Option<PathBuf> {
+            self.cwds.get(&pid).cloned()
+        }
+        fn comm(&self, pid: i32) -> Option<String> {
+            self.comms.get(&pid).cloned()
+        }
+        fn children(&self, pid: i32) -> Vec<i32> {
+            self.children.get(&pid).cloned().unwrap_or_default()
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::mock::MockProcessInfo;
     use super::*;
-    use std::collections::HashMap;
 
-    struct MockProcessInfo {
-        cwds: HashMap<u32, PathBuf>,
-        children: HashMap<u32, Vec<ChildProcess>>,
+    fn names(list: &[&str]) -> BTreeSet<String> {
+        list.iter().map(|s| s.to_string()).collect()
     }
 
-    impl ProcessInfoProvider for MockProcessInfo {
-        fn get_cwd(&self, pid: u32) -> Result<PathBuf, ProcessError> {
-            self.cwds
-                .get(&pid)
-                .cloned()
-                .ok_or(ProcessError::NotFound(pid))
-        }
-
-        fn get_children(&self, pid: u32) -> Result<Vec<ChildProcess>, ProcessError> {
-            Ok(self.children.get(&pid).cloned().unwrap_or_default())
-        }
-    }
-
-    #[test]
-    fn test_mock_process_info() {
-        let parent_pid: u32 = 1000;
-        let child_pid: u32 = 1001;
-        let child_cwd = PathBuf::from("/home/user/projects");
-
-        let mut cwds = HashMap::new();
-        cwds.insert(parent_pid, PathBuf::from("/home/user"));
-        cwds.insert(child_pid, child_cwd.clone());
-
-        let child = ChildProcess {
-            pid: child_pid,
-            cwd: child_cwd.clone(),
-            cmdline: "bash".to_string(),
-        };
-
-        let mut children_map = HashMap::new();
-        children_map.insert(parent_pid, vec![child]);
-
-        let mock = MockProcessInfo {
-            cwds,
-            children: children_map,
-        };
-
-        // Verify get_cwd returns the correct path for the parent
-        let parent_cwd = mock.get_cwd(parent_pid).expect("parent cwd should exist");
-        assert_eq!(parent_cwd, PathBuf::from("/home/user"));
-
-        // Verify get_children returns correct child data
-        let result = mock
-            .get_children(parent_pid)
-            .expect("should return children");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].pid, child_pid);
-        assert_eq!(result[0].cwd, child_cwd);
-        assert_eq!(result[0].cmdline, "bash");
+    /// foot(10) -> fish(11) -> nvim(12)
+    fn terminal_tree() -> MockProcessInfo {
+        let mut m = MockProcessInfo::default();
+        m.add(10, "foot", &["foot"], "/home/rc");
+        m.add(11, "fish", &["fish"], "/home/rc/Work");
+        m.add(
+            12,
+            "nvim",
+            &["nvim", "src/main.rs"],
+            "/home/rc/Work/hyprwake",
+        );
+        m.link(10, 11).link(11, 12);
+        m
     }
 
     #[test]
-    fn test_mock_cwd_not_found() {
-        let mock = MockProcessInfo {
-            cwds: HashMap::new(),
-            children: HashMap::new(),
-        };
-
-        let result = mock.get_cwd(99999);
-        assert!(result.is_err());
-
-        match result.unwrap_err() {
-            ProcessError::NotFound(pid) => assert_eq!(pid, 99999),
-            other => panic!("expected NotFound, got {other}"),
-        }
+    fn finds_a_nested_tui() {
+        let m = terminal_tree();
+        assert_eq!(
+            m.find_descendant(10, &names(&["nvim", "yazi"]), 5),
+            Some(12)
+        );
     }
 
     #[test]
-    fn test_mock_children_empty_for_unknown_pid() {
-        let mock = MockProcessInfo {
-            cwds: HashMap::new(),
-            children: HashMap::new(),
-        };
+    fn finds_the_shell_one_level_down() {
+        let m = terminal_tree();
+        assert_eq!(
+            m.find_descendant(10, &names(&["fish", "bash"]), 5),
+            Some(11)
+        );
+    }
 
-        // get_children returns Ok(empty) for unknown PIDs (not an error)
-        let result = mock.get_children(99999).expect("should return empty vec");
-        assert!(result.is_empty());
+    #[test]
+    fn respects_the_depth_bound() {
+        let m = terminal_tree();
+        // nvim sits two levels below foot; a depth of 1 must not reach it.
+        assert_eq!(m.find_descendant(10, &names(&["nvim"]), 1), None);
+    }
+
+    #[test]
+    fn returns_none_when_nothing_matches() {
+        let m = terminal_tree();
+        assert_eq!(m.find_descendant(10, &names(&["emacs"]), 5), None);
+    }
+
+    #[test]
+    fn returns_none_for_unknown_pid() {
+        let m = terminal_tree();
+        assert_eq!(m.find_descendant(999, &names(&["nvim"]), 5), None);
+    }
+
+    #[test]
+    fn search_terminates_on_a_cyclic_tree() {
+        // /proc can race: a pid may be reported as its own descendant.
+        let mut m = MockProcessInfo::default();
+        m.add(1, "a", &["a"], "/");
+        m.add(2, "b", &["b"], "/");
+        m.link(1, 2).link(2, 1);
+        assert_eq!(m.find_descendant(1, &names(&["zzz"]), 3), None);
+    }
+
+    #[test]
+    fn real_provider_reads_this_process() {
+        let me = std::process::id() as i32;
+        let real = RealProcessInfo;
+        assert!(real.cmdline(me).is_some_and(|a| !a.is_empty()));
+        assert!(real.cwd(me).is_some());
+        assert!(real.comm(me).is_some());
     }
 }

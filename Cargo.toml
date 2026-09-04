@@ -1,13 +1,17 @@
 [package]
-name = "hyprflow"
-version = "0.2.1"
+name = "hyprwake"
+version = "0.1.0"
 edition = "2021"
-description = "Save and restore Hyprland window sessions"
+description = "Save and restore Hyprland sessions: windows, workspaces, terminal directories and TUIs"
 license = "MIT"
-repository = "https://github.com/iSorensen/hyprflow"
+repository = "https://github.com/rumen-cholakov/hyprwake"
 readme = "README.md"
 keywords = ["hyprland", "wayland", "session", "restore"]
 categories = ["command-line-utilities"]
+
+[features]
+# Exposes the hyprctl/process test doubles to integration tests.
+testing = []
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }

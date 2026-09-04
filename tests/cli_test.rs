@@ -1,68 +1,67 @@
 use assert_cmd::Command;
-use predicates::prelude::*;
+use predicates::str::contains;
 
-#[test]
-fn test_cli_version() {
-    Command::cargo_bin("hyprflow")
-        .unwrap()
-        .arg("--version")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("hyprflow"));
+fn hyprwake() -> Command {
+    // Cargo points this at the freshly built binary for integration tests.
+    Command::new(env!("CARGO_BIN_EXE_hyprwake"))
 }
 
 #[test]
-fn test_cli_help() {
-    Command::cargo_bin("hyprflow")
-        .unwrap()
+fn help_lists_the_main_commands() {
+    hyprwake()
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("save"))
-        .stdout(predicate::str::contains("restore"))
-        .stdout(predicate::str::contains("list"))
-        .stdout(predicate::str::contains("delete"));
+        .stdout(contains("save"))
+        .stdout(contains("restore"))
+        .stdout(contains("watch"))
+        .stdout(contains("doctor"));
 }
 
 #[test]
-fn test_cli_list_empty() {
-    let tmp = tempfile::tempdir().unwrap();
-    Command::cargo_bin("hyprflow")
-        .unwrap()
-        .arg("list")
-        .env("XDG_DATA_HOME", tmp.path())
+fn version_is_reported() {
+    hyprwake()
+        .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("No saved sessions"));
+        .stdout(contains(env!("CARGO_PKG_VERSION")));
 }
 
 #[test]
-fn test_cli_delete_nonexistent() {
-    let tmp = tempfile::tempdir().unwrap();
-    Command::cargo_bin("hyprflow")
-        .unwrap()
-        .args(["delete", "nonexistent"])
-        .env("XDG_DATA_HOME", tmp.path())
+fn config_reports_paths_and_detected_terminals() {
+    hyprwake()
+        .arg("config")
+        .assert()
+        .success()
+        .stdout(contains("config.toml"))
+        .stdout(contains("Sessions:"))
+        // Regression: with no config file the terminals table used to come
+        // back empty, silently disabling terminal capture.
+        .stdout(contains("foot"));
+}
+
+#[test]
+fn an_unknown_command_fails() {
+    hyprwake()
+        .arg("definitely-not-a-command")
         .assert()
         .failure();
 }
 
 #[test]
-fn test_cli_config_shows_paths() {
-    Command::cargo_bin("hyprflow")
-        .unwrap()
-        .arg("config")
+fn restoring_a_missing_session_fails_cleanly() {
+    hyprwake()
+        .args(["restore", "no-such-session-xyz"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("Config path"))
-        .stdout(predicate::str::contains("Sessions dir"));
+        .failure()
+        .stderr(contains("no session"));
 }
 
 #[test]
-fn test_autosave_help() {
-    let mut cmd = Command::cargo_bin("hyprflow").unwrap();
-    cmd.args(["autosave", "--help"]);
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("autosave"));
+fn deleting_a_missing_session_fails_cleanly() {
+    hyprwake()
+        .args(["delete", "no-such-session-xyz"])
+        .assert()
+        .failure()
+        .stderr(contains("not found"));
 }

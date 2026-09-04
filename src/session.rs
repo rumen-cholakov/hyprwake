@@ -1,23 +1,20 @@
+//! The saved session: what a snapshot contains and how it is stored.
+
+use crate::workspace::WorkspaceRef;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-
-// === Hyprflow session structs (what we save to disk) ===
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BraveProfile {
-    pub directory: String, // "Default", "Profile 1", etc.
-    pub name: String,      // "Credifit", "LinkPJ", etc.
-}
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub name: String,
     pub created_at: DateTime<Utc>,
     pub hyprland_version: String,
+    #[serde(default)]
     pub monitors: Vec<Monitor>,
     pub clients: Vec<SessionClient>,
     #[serde(default)]
-    pub brave_profiles: Vec<BraveProfile>,
+    pub browser_profiles: Vec<BrowserProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,33 +22,65 @@ pub struct Monitor {
     pub name: String,
     pub width: u32,
     pub height: u32,
+    #[serde(default)]
     pub transform: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionClient {
     pub class: String,
+    /// Kept for the human reading `hyprwake list -v`; titles are set by the
+    /// running program and are never used for matching.
+    #[serde(default)]
     pub title: String,
-    pub workspace: i32,
+    pub workspace: WorkspaceRef,
+    #[serde(default)]
     pub monitor: String,
     pub at: [i32; 2],
     pub size: [i32; 2],
+    #[serde(default)]
     pub floating: bool,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
     pub fullscreen: u8,
+    #[serde(default)]
     pub focus_history_id: i32,
     pub launch: LaunchInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaunchInfo {
-    pub command: String,
-    pub args: Vec<String>,
-    pub hint: Option<String>,
+    /// argv recovered from /proc, ready to be shell-quoted.
+    pub argv: Vec<String>,
+    /// Whether restore should launch this window.
+    ///
+    /// Single-instance programs own several windows from one process; only
+    /// the first carries `spawn`, and the rest are placed by the sweep once
+    /// the program reopens them itself.
+    #[serde(default = "default_true")]
+    pub spawn: bool,
 }
 
-// === Session storage ===
+fn default_true() -> bool {
+    true
+}
 
-use std::path::Path;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserProfile {
+    pub class: String,
+    pub directory: String,
+    pub name: String,
+    pub workspace: String,
+}
+
+impl Session {
+    pub fn spawn_count(&self) -> usize {
+        self.clients.iter().filter(|c| c.launch.spawn).count()
+    }
+}
+
+// ── Storage ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -61,8 +90,6 @@ pub enum SessionError {
     Json(#[from] serde_json::Error),
     #[error("session '{0}' not found")]
     NotFound(String),
-    #[error("session '{0}' already exists")]
-    AlreadyExists(String),
 }
 
 #[derive(Debug, Clone)]
@@ -72,21 +99,27 @@ pub struct SessionSummary {
     pub client_count: usize,
 }
 
+pub fn session_path(name: &str, sessions_dir: &Path) -> std::path::PathBuf {
+    sessions_dir.join(format!("{name}.json"))
+}
+
+/// Write atomically: a session file truncated by a crash mid-write would be
+/// worse than a slightly stale one.
 pub fn save_session(session: &Session, sessions_dir: &Path) -> Result<(), SessionError> {
     std::fs::create_dir_all(sessions_dir)?;
-    let path = sessions_dir.join(format!("{}.json", session.name));
-    let json = serde_json::to_string_pretty(session)?;
-    std::fs::write(path, json)?;
+    let path = session_path(&session.name, sessions_dir);
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(session)?)?;
+    std::fs::rename(&tmp, &path)?;
     Ok(())
 }
 
 pub fn load_session(name: &str, sessions_dir: &Path) -> Result<Session, SessionError> {
-    let path = sessions_dir.join(format!("{name}.json"));
+    let path = session_path(name, sessions_dir);
     if !path.exists() {
         return Err(SessionError::NotFound(name.to_string()));
     }
-    let content = std::fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&content)?)
+    Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
 }
 
 pub fn list_sessions(sessions_dir: &Path) -> Result<Vec<SessionSummary>, SessionError> {
@@ -94,27 +127,27 @@ pub fn list_sessions(sessions_dir: &Path) -> Result<Vec<SessionSummary>, Session
         return Ok(vec![]);
     }
     let mut summaries = Vec::new();
-    for entry in std::fs::read_dir(sessions_dir)? {
-        let entry = entry?;
+    for entry in std::fs::read_dir(sessions_dir)?.flatten() {
         let path = entry.path();
-        if path.extension().map(|e| e == "json").unwrap_or(false) {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(session) = serde_json::from_str::<Session>(&content) {
-                    summaries.push(SessionSummary {
-                        name: session.name.clone(),
-                        created_at: session.created_at,
-                        client_count: session.clients.len(),
-                    });
-                }
+        if path.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(session) = serde_json::from_str::<Session>(&content) {
+                summaries.push(SessionSummary {
+                    name: session.name.clone(),
+                    created_at: session.created_at,
+                    client_count: session.clients.len(),
+                });
             }
         }
     }
-    summaries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    summaries.sort_by_key(|s| std::cmp::Reverse(s.created_at));
     Ok(summaries)
 }
 
 pub fn delete_session(name: &str, sessions_dir: &Path) -> Result<(), SessionError> {
-    let path = sessions_dir.join(format!("{name}.json"));
+    let path = session_path(name, sessions_dir);
     if !path.exists() {
         return Err(SessionError::NotFound(name.to_string()));
     }
@@ -123,31 +156,25 @@ pub fn delete_session(name: &str, sessions_dir: &Path) -> Result<(), SessionErro
 }
 
 pub fn session_exists(name: &str, sessions_dir: &Path) -> bool {
-    sessions_dir.join(format!("{name}.json")).exists()
+    session_path(name, sessions_dir).exists()
 }
 
-// === Autosave helpers ===
+// ── Autosave rotation ──────────────────────────────────────────────────────
 
 pub const AUTOSAVE_PREFIX: &str = "autosave-";
 
 pub fn autosave_name_now() -> String {
-    let now = Utc::now();
-    format!("autosave-{}", now.format("%Y%m%dT%H%M%S"))
+    format!("{AUTOSAVE_PREFIX}{}", Utc::now().format("%Y%m%dT%H%M%S"))
 }
 
-/// Returns autosave sessions only (name starts with `AUTOSAVE_PREFIX`),
-/// sorted by name descending. The timestamp format `YYYYMMDDTHHMMSS` sorts
-/// lexicographically, so newest autosave is always first.
+/// Autosaves only, newest first. The timestamp format sorts lexicographically.
 pub fn list_autosave_sessions(sessions_dir: &Path) -> Result<Vec<SessionSummary>, SessionError> {
     let mut all = list_sessions(sessions_dir)?;
     all.retain(|s| s.name.starts_with(AUTOSAVE_PREFIX));
-    // Sort by name descending — autosave-YYYYMMDDTHHMMSS sorts lexicographically
     all.sort_by(|a, b| b.name.cmp(&a.name));
     Ok(all)
 }
 
-/// Deletes the oldest autosave sessions, keeping only the `retain` newest.
-/// Returns the count of sessions deleted. Non-autosave sessions are untouched.
 pub fn rotate_autosaves(sessions_dir: &Path, retain: usize) -> Result<usize, SessionError> {
     if retain == 0 {
         return Ok(0);
@@ -163,373 +190,146 @@ pub fn rotate_autosaves(sessions_dir: &Path, retain: usize) -> Result<usize, Ses
     Ok(pruned)
 }
 
-/// Parses a human-readable duration string into a `chrono::Duration`.
-///
-/// Supported suffixes: `m` (minutes), `h` (hours), `d` (days).
-/// Examples: `"30m"`, `"24h"`, `"7d"`.
+/// Parse `30m`, `24h`, `7d` into a duration.
 pub fn parse_max_age(s: &str) -> Result<chrono::Duration, String> {
-    if s.len() < 2 {
-        return Err(format!("invalid duration: '{s}'"));
-    }
-    let (num_str, unit) = s.split_at(s.len() - 1);
-    let num: i64 = num_str
+    let (num, unit) = s.split_at(s.len().saturating_sub(1));
+    let n: i64 = num
         .parse()
         .map_err(|_| format!("invalid duration: '{s}'"))?;
     match unit {
-        "m" => Ok(chrono::Duration::minutes(num)),
-        "h" => Ok(chrono::Duration::hours(num)),
-        "d" => Ok(chrono::Duration::days(num)),
-        _ => Err(format!(
-            "invalid duration unit '{unit}' in '{s}'. Use m, h, or d."
-        )),
+        "m" => Ok(chrono::Duration::minutes(n)),
+        "h" => Ok(chrono::Duration::hours(n)),
+        "d" => Ok(chrono::Duration::days(n)),
+        _ => Err(format!("invalid duration unit in '{s}'. Use m, h or d.")),
     }
-}
-
-// === Raw hyprctl JSON structs (what hyprctl returns) ===
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HyprClient {
-    pub address: String,
-    pub class: String,
-    pub title: String,
-    pub workspace: HyprWorkspace,
-    pub monitor: i32,
-    pub at: [i32; 2],
-    pub size: [i32; 2],
-    pub floating: bool,
-    pub fullscreen: u8,
-    #[serde(rename = "focusHistoryID")]
-    pub focus_history_id: i32,
-    pub pid: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HyprWorkspace {
-    pub id: i32,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HyprMonitor {
-    pub name: String,
-    pub width: u32,
-    pub height: u32,
-    pub transform: u32,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile;
+    use tempfile::TempDir;
 
-    #[test]
-    fn test_session_roundtrip() {
-        let session = Session {
-            name: "work".to_string(),
-            created_at: DateTime::parse_from_rfc3339("2026-03-08T10:00:00Z")
-                .unwrap()
-                .with_timezone(&Utc),
-            hyprland_version: "0.47.0".to_string(),
-            monitors: vec![Monitor {
-                name: "DP-4".to_string(),
-                width: 2560,
-                height: 1440,
-                transform: 0,
-            }],
-            clients: vec![SessionClient {
-                class: "kitty".to_string(),
-                title: "Claude Code".to_string(),
-                workspace: 4,
-                monitor: "DP-4".to_string(),
-                at: [12, 50],
-                size: [842, 1378],
-                floating: false,
-                fullscreen: 0,
-                focus_history_id: 3,
-                launch: LaunchInfo {
-                    command: "kitty".to_string(),
-                    args: vec![],
-                    hint: None,
-                },
-            }],
-            brave_profiles: vec![],
-        };
-
-        let json = serde_json::to_string(&session).expect("serialization failed");
-        let restored: Session = serde_json::from_str(&json).expect("deserialization failed");
-
-        assert_eq!(restored.name, session.name);
-        assert_eq!(restored.hyprland_version, session.hyprland_version);
-        assert_eq!(restored.created_at, session.created_at);
-
-        assert_eq!(restored.monitors.len(), 1);
-        let mon = &restored.monitors[0];
-        assert_eq!(mon.name, "DP-4");
-        assert_eq!(mon.width, 2560);
-        assert_eq!(mon.height, 1440);
-        assert_eq!(mon.transform, 0);
-
-        assert_eq!(restored.clients.len(), 1);
-        let client = &restored.clients[0];
-        assert_eq!(client.class, "kitty");
-        assert_eq!(client.title, "Claude Code");
-        assert_eq!(client.workspace, 4);
-        assert_eq!(client.monitor, "DP-4");
-        assert_eq!(client.at, [12, 50]);
-        assert_eq!(client.size, [842, 1378]);
-        assert!(!client.floating);
-        assert_eq!(client.fullscreen, 0);
-        assert_eq!(client.focus_history_id, 3);
-        assert_eq!(client.launch.command, "kitty");
-        assert!(client.launch.args.is_empty());
-        assert!(client.launch.hint.is_none());
+    fn client(class: &str) -> SessionClient {
+        SessionClient {
+            class: class.to_string(),
+            title: String::new(),
+            workspace: WorkspaceRef::new(1, "1"),
+            monitor: "eDP-1".to_string(),
+            at: [0, 0],
+            size: [800, 600],
+            floating: false,
+            pinned: false,
+            fullscreen: 0,
+            focus_history_id: 0,
+            launch: LaunchInfo {
+                argv: vec![class.to_string()],
+                spawn: true,
+            },
+        }
     }
 
-    fn make_test_session(name: &str) -> Session {
+    fn session(name: &str, classes: &[&str]) -> Session {
         Session {
             name: name.to_string(),
             created_at: Utc::now(),
-            hyprland_version: "0.54.1".to_string(),
+            hyprland_version: "0.56.2".to_string(),
             monitors: vec![],
-            clients: vec![SessionClient {
-                class: "kitty".to_string(),
-                title: "test".to_string(),
-                workspace: 1,
-                monitor: "DP-4".to_string(),
-                at: [0, 0],
-                size: [800, 600],
-                floating: false,
-                fullscreen: 0,
-                focus_history_id: 0,
-                launch: LaunchInfo {
-                    command: "kitty".to_string(),
-                    args: vec![],
-                    hint: None,
-                },
-            }],
-            brave_profiles: vec![],
+            clients: classes.iter().map(|c| client(c)).collect(),
+            browser_profiles: vec![],
         }
     }
 
     #[test]
-    fn test_session_roundtrip_with_brave_profiles() {
-        let session = Session {
-            name: "brave-test".to_string(),
-            created_at: DateTime::parse_from_rfc3339("2026-03-08T10:00:00Z")
-                .unwrap()
-                .with_timezone(&Utc),
-            hyprland_version: "0.54.1".to_string(),
-            monitors: vec![],
-            clients: vec![],
-            brave_profiles: vec![
-                BraveProfile {
-                    directory: "Default".to_string(),
-                    name: "Credifit".to_string(),
-                },
-                BraveProfile {
-                    directory: "Profile 1".to_string(),
-                    name: "LinkPJ".to_string(),
-                },
-            ],
-        };
-
-        let json = serde_json::to_string(&session).expect("serialization failed");
-        let restored: Session = serde_json::from_str(&json).expect("deserialization failed");
-
-        assert_eq!(restored.brave_profiles.len(), 2);
-        assert_eq!(restored.brave_profiles[0].directory, "Default");
-        assert_eq!(restored.brave_profiles[0].name, "Credifit");
-        assert_eq!(restored.brave_profiles[1].directory, "Profile 1");
-        assert_eq!(restored.brave_profiles[1].name, "LinkPJ");
+    fn round_trips_through_disk() {
+        let dir = TempDir::new().unwrap();
+        let s = session("latest", &["foot", "google-chrome"]);
+        save_session(&s, dir.path()).unwrap();
+        let loaded = load_session("latest", dir.path()).unwrap();
+        assert_eq!(loaded.clients.len(), 2);
+        assert_eq!(loaded.clients[0].launch.argv, vec!["foot"]);
+        assert_eq!(loaded.clients[0].workspace.selector(), "1");
     }
 
     #[test]
-    fn test_session_backward_compat_no_brave_profiles() {
-        // A session JSON without the brave_profiles field (as saved by older versions).
-        let json = r#"{
-            "name": "old-session",
-            "created_at": "2026-03-08T10:00:00Z",
-            "hyprland_version": "0.54.0",
-            "monitors": [],
-            "clients": []
-        }"#;
+    fn saving_leaves_no_temp_file_behind() {
+        let dir = TempDir::new().unwrap();
+        save_session(&session("latest", &["foot"]), dir.path()).unwrap();
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty());
+    }
 
-        let session: Session = serde_json::from_str(json).expect("deserialization must succeed");
+    #[test]
+    fn missing_session_is_reported() {
+        let dir = TempDir::new().unwrap();
+        assert!(matches!(
+            load_session("nope", dir.path()),
+            Err(SessionError::NotFound(_))
+        ));
+        assert!(!session_exists("nope", dir.path()));
+    }
+
+    #[test]
+    fn listing_an_absent_directory_is_empty_not_an_error() {
+        let dir = TempDir::new().unwrap();
+        let missing = dir.path().join("nothing-here");
+        assert!(list_sessions(&missing).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rotation_keeps_the_newest_autosaves_only() {
+        let dir = TempDir::new().unwrap();
+        for stamp in ["20260101T000000", "20260102T000000", "20260103T000000"] {
+            let mut s = session(&format!("autosave-{stamp}"), &["foot"]);
+            s.created_at = Utc::now();
+            save_session(&s, dir.path()).unwrap();
+        }
+        save_session(&session("work", &["foot"]), dir.path()).unwrap();
+
+        assert_eq!(rotate_autosaves(dir.path(), 2).unwrap(), 1);
+        let names: Vec<_> = list_autosave_sessions(dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
         assert_eq!(
-            session.brave_profiles.len(),
-            0,
-            "missing brave_profiles field should default to empty vec"
+            names,
+            vec!["autosave-20260103T000000", "autosave-20260102T000000"]
+        );
+        assert!(
+            session_exists("work", dir.path()),
+            "named sessions are never rotated away"
         );
     }
 
     #[test]
-    fn test_save_and_load_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let session = make_test_session("work");
-        save_session(&session, dir.path()).unwrap();
-        let loaded = load_session("work", dir.path()).unwrap();
-        assert_eq!(loaded.name, "work");
-        assert_eq!(loaded.clients.len(), 1);
+    fn rotation_with_zero_retain_is_a_no_op() {
+        let dir = TempDir::new().unwrap();
+        save_session(&session("autosave-20260101T000000", &["foot"]), dir.path()).unwrap();
+        assert_eq!(rotate_autosaves(dir.path(), 0).unwrap(), 0);
     }
 
     #[test]
-    fn test_list_sessions() {
-        let dir = tempfile::tempdir().unwrap();
-        save_session(&make_test_session("a"), dir.path()).unwrap();
-        save_session(&make_test_session("b"), dir.path()).unwrap();
-        let list = list_sessions(dir.path()).unwrap();
-        assert_eq!(list.len(), 2);
+    fn spawn_count_ignores_sweep_only_windows() {
+        let mut s = session("latest", &["chrome", "chrome"]);
+        s.clients[1].launch.spawn = false;
+        assert_eq!(s.spawn_count(), 1);
     }
 
     #[test]
-    fn test_delete_session() {
-        let dir = tempfile::tempdir().unwrap();
-        save_session(&make_test_session("old"), dir.path()).unwrap();
-        delete_session("old", dir.path()).unwrap();
-        assert!(load_session("old", dir.path()).is_err());
-    }
-
-    #[test]
-    fn test_load_nonexistent_session() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(load_session("nope", dir.path()).is_err());
-    }
-
-    #[test]
-    fn test_list_empty_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let list = list_sessions(dir.path()).unwrap();
-        assert!(list.is_empty());
-    }
-
-    #[test]
-    fn test_session_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(!session_exists("x", dir.path()));
-        save_session(&make_test_session("x"), dir.path()).unwrap();
-        assert!(session_exists("x", dir.path()));
-    }
-
-    #[test]
-    fn test_autosave_name_format() {
-        let name = autosave_name_now();
-        assert!(name.starts_with("autosave-"));
-        // Format: autosave-YYYYMMDDTHHMMSS — total 24 chars
-        assert_eq!(name.len(), 24);
-        let ts = &name[9..];
-        assert_eq!(ts.len(), 15);
-        assert_eq!(&ts[8..9], "T");
-    }
-
-    #[test]
-    fn test_list_autosave_sessions_filters_by_prefix() {
-        let dir = tempfile::tempdir().unwrap();
-        save_session(&make_test_session("work"), dir.path()).unwrap();
-        save_session(&make_test_session("autosave-20260309T100000"), dir.path()).unwrap();
-        save_session(&make_test_session("autosave-20260309T110000"), dir.path()).unwrap();
-
-        let autosaves = list_autosave_sessions(dir.path()).unwrap();
-        assert_eq!(autosaves.len(), 2);
-        assert_eq!(autosaves[0].name, "autosave-20260309T110000");
-        assert_eq!(autosaves[1].name, "autosave-20260309T100000");
-    }
-
-    #[test]
-    fn test_rotate_autosaves_keeps_n() {
-        let dir = tempfile::tempdir().unwrap();
-        save_session(&make_test_session("autosave-20260309T100000"), dir.path()).unwrap();
-        save_session(&make_test_session("autosave-20260309T110000"), dir.path()).unwrap();
-        save_session(&make_test_session("autosave-20260309T120000"), dir.path()).unwrap();
-        save_session(&make_test_session("autosave-20260309T130000"), dir.path()).unwrap();
-        save_session(&make_test_session("work"), dir.path()).unwrap();
-
-        let pruned = rotate_autosaves(dir.path(), 2).unwrap();
-        assert_eq!(pruned, 2);
-
-        let remaining = list_autosave_sessions(dir.path()).unwrap();
-        assert_eq!(remaining.len(), 2);
-        assert_eq!(remaining[0].name, "autosave-20260309T130000");
-        assert_eq!(remaining[1].name, "autosave-20260309T120000");
-
-        assert!(session_exists("work", dir.path()));
-    }
-
-    #[test]
-    fn test_rotate_autosaves_noop_when_under_limit() {
-        let dir = tempfile::tempdir().unwrap();
-        save_session(&make_test_session("autosave-20260309T100000"), dir.path()).unwrap();
-
-        let pruned = rotate_autosaves(dir.path(), 5).unwrap();
-        assert_eq!(pruned, 0);
-        assert_eq!(list_autosave_sessions(dir.path()).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn test_rotate_autosaves_retain_zero_is_noop() {
-        let dir = tempfile::tempdir().unwrap();
-        save_session(&make_test_session("autosave-20260309T100000"), dir.path()).unwrap();
-
-        let pruned = rotate_autosaves(dir.path(), 0).unwrap();
-        assert_eq!(pruned, 0);
-        assert_eq!(list_autosave_sessions(dir.path()).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn test_parse_duration_minutes() {
+    fn durations_parse() {
         assert_eq!(parse_max_age("30m").unwrap(), chrono::Duration::minutes(30));
-    }
-
-    #[test]
-    fn test_parse_duration_hours() {
         assert_eq!(parse_max_age("24h").unwrap(), chrono::Duration::hours(24));
-    }
-
-    #[test]
-    fn test_parse_duration_days() {
         assert_eq!(parse_max_age("7d").unwrap(), chrono::Duration::days(7));
     }
 
     #[test]
-    fn test_parse_duration_invalid() {
-        assert!(parse_max_age("abc").is_err());
-        assert!(parse_max_age("10x").is_err());
+    fn bad_durations_are_rejected() {
+        assert!(parse_max_age("24x").is_err());
+        assert!(parse_max_age("h").is_err());
         assert!(parse_max_age("").is_err());
-    }
-
-    #[test]
-    fn test_parse_hyprctl_clients_fixture() {
-        let raw = include_str!("../tests/fixtures/sample_clients.json");
-        let clients: Vec<HyprClient> = serde_json::from_str(raw).expect("fixture parse failed");
-
-        assert_eq!(clients.len(), 3);
-
-        // First client: kitty
-        let kitty = &clients[0];
-        assert_eq!(kitty.address, "0x55c46f7e1350");
-        assert_eq!(kitty.class, "kitty");
-        assert_eq!(kitty.title, "Claude Code");
-        assert_eq!(kitty.workspace.id, 4);
-        assert_eq!(kitty.workspace.name, "4");
-        assert_eq!(kitty.monitor, 0);
-        assert_eq!(kitty.at, [12, 50]);
-        assert_eq!(kitty.size, [842, 1378]);
-        assert!(!kitty.floating);
-        assert_eq!(kitty.fullscreen, 0);
-        assert_eq!(kitty.focus_history_id, 3);
-        assert_eq!(kitty.pid, 9537);
-
-        // Second client: brave-browser
-        let brave = &clients[1];
-        assert_eq!(brave.class, "brave-browser");
-        assert_eq!(brave.workspace.id, 1);
-        assert_eq!(brave.focus_history_id, 1);
-
-        // Third client: obsidian
-        let obsidian = &clients[2];
-        assert_eq!(obsidian.class, "obsidian");
-        assert_eq!(obsidian.title, "smart notes - Obsidian");
-        assert_eq!(obsidian.workspace.id, 3);
-        assert_eq!(obsidian.focus_history_id, 2);
-        assert_eq!(obsidian.pid, 5000);
     }
 }

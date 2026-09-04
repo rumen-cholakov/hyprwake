@@ -1,618 +1,446 @@
-use crate::config::{AppConfig, Config};
-use crate::hyprctl::{HyprctlClient, HyprctlError};
-use crate::process::{ProcessError, ProcessInfoProvider};
-use crate::session::{LaunchInfo, Monitor, Session, SessionClient};
-use chrono::Utc;
-use std::collections::HashMap;
+//! Turning the live desktop into a [`Session`].
 
-// ── Error ──────────────────────────────────────────────────────────────────
+use crate::browsers;
+use crate::config::{AppConfig, Config};
+use crate::hyprctl::{HyprClient, HyprctlClient, HyprctlError};
+use crate::process::ProcessInfoProvider;
+use crate::session::{BrowserProfile, LaunchInfo, Monitor, Session, SessionClient};
+use chrono::Utc;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CaptureError {
     #[error("hyprctl error: {0}")]
     Hyprctl(#[from] HyprctlError),
-    #[error("process error: {0}")]
-    Process(#[from] ProcessError),
 }
 
-// ── Public API ─────────────────────────────────────────────────────────────
+/// Arguments that name a per-run temporary file. Replaying them would point
+/// the restored program at a path that no longer exists.
+const VOLATILE_ARG_PREFIXES: &[&str] = &["--cwd-file", "--chooser-file", "--choosefile"];
 
-/// Capture the current Hyprland session state into a [`Session`].
-///
-/// All windows whose class appears in `config.filters.ignore_classes` are
-/// excluded from the returned session.
+/// How deep to look inside a terminal for a shell or a TUI.
+const PROCESS_SEARCH_DEPTH: usize = 5;
+
 pub fn capture_session(
     name: &str,
     hyprctl: &dyn HyprctlClient,
-    process_info: &dyn ProcessInfoProvider,
+    process: &dyn ProcessInfoProvider,
     config: &Config,
 ) -> Result<Session, CaptureError> {
     let raw_clients = hyprctl.get_clients()?;
-    let raw_monitors = hyprctl.get_monitors()?;
+    let raw_monitors = hyprctl.get_monitors().unwrap_or_default();
     let version = hyprctl
         .get_hyprland_version()
         .unwrap_or_else(|_| "unknown".to_string());
 
-    // Build a map from monitor ID to monitor name so that
-    // HyprClient.monitor (an i32 monitor ID) can be resolved to a
-    // human-readable name such as "DP-1".
-    let monitor_map: HashMap<i32, String> = raw_monitors
+    let monitor_names: HashMap<i32, String> = raw_monitors
         .iter()
         .map(|m| (m.id, m.name.clone()))
         .collect();
 
-    let monitors: Vec<Monitor> = raw_monitors
-        .iter()
-        .map(|m| Monitor {
-            name: m.name.clone(),
-            width: m.width,
-            height: m.height,
-            transform: m.transform,
-        })
-        .collect();
+    let browser_profiles = collect_browser_profiles(&raw_clients, config);
+    // Classes whose windows the browser itself will reopen, one per profile.
+    let profile_driven: HashSet<&str> = browser_profiles.iter().map(|p| p.class.as_str()).collect();
 
-    let clients: Vec<SessionClient> = raw_clients
-        .iter()
-        .filter(|c| !config.filters.ignore_classes.contains(&c.class))
-        .map(|c| build_session_client(c, &monitor_map, process_info, config))
-        .collect();
+    let mut clients = Vec::new();
+    let mut seen_pids = HashSet::new();
 
-    let brave_profiles = if clients.iter().any(|c| c.class == "brave-browser") {
-        let all_profiles = crate::brave::read_profiles().unwrap_or_else(|e| {
-            eprintln!("Warning: could not read Brave profiles: {e}");
-            vec![]
+    for raw in &raw_clients {
+        if !raw.is_restorable() || config.is_ignored(&raw.class) {
+            continue;
+        }
+        let Some(argv) = relaunch_argv(raw, process, config) else {
+            // No argv means the process vanished between the query and the
+            // read, or it is not ours to relaunch.
+            continue;
+        };
+
+        let app = config.apps.get(&raw.class);
+        let first_of_process = seen_pids.insert(raw.pid);
+        let spawn = first_of_process
+            && !app.is_some_and(|a| a.no_spawn)
+            && !profile_driven.contains(raw.class.as_str());
+
+        clients.push(SessionClient {
+            class: raw.class.clone(),
+            title: raw.title.clone(),
+            workspace: raw.workspace.clone(),
+            monitor: monitor_names
+                .get(&raw.monitor)
+                .cloned()
+                .unwrap_or_else(|| format!("monitor-{}", raw.monitor)),
+            at: raw.at,
+            size: raw.size,
+            floating: raw.floating,
+            pinned: raw.pinned,
+            fullscreen: raw.fullscreen,
+            focus_history_id: raw.focus_history_id,
+            launch: LaunchInfo { argv, spawn },
         });
-        let profile_ws = config
-            .apps
-            .get("brave-browser")
-            .and_then(|c| c.profile_workspaces.as_ref());
-        crate::brave::filter_profiles_by_config(all_profiles, profile_ws)
-    } else {
-        vec![]
-    };
+    }
 
     Ok(Session {
         name: name.to_string(),
         created_at: Utc::now(),
         hyprland_version: version,
-        monitors,
+        monitors: raw_monitors
+            .iter()
+            .map(|m| Monitor {
+                name: m.name.clone(),
+                width: m.width,
+                height: m.height,
+                transform: m.transform,
+            })
+            .collect(),
         clients,
-        brave_profiles,
+        browser_profiles,
     })
 }
 
-// ── Private helpers ────────────────────────────────────────────────────────
+/// The argv that recreates this window's process, or `None` when there is
+/// nothing usable to replay.
+pub fn relaunch_argv(
+    client: &HyprClient,
+    process: &dyn ProcessInfoProvider,
+    config: &Config,
+) -> Option<Vec<String>> {
+    if let Some(term) = config.terminal_for(&client.class) {
+        let home = home_dir();
 
-/// Returns `true` when `cmdline` is a bare shell invocation (no arguments,
-/// no running command).  Used to suppress noisy hints like `/bin/zsh`.
-fn is_plain_shell(cmdline: &str) -> bool {
-    const PLAIN_SHELLS: &[&str] = &[
-        "zsh",
-        "bash",
-        "fish",
-        "sh",
-        "/bin/zsh",
-        "/usr/bin/zsh",
-        "/bin/bash",
-        "/usr/bin/bash",
-        "/bin/fish",
-        "/usr/bin/fish",
-        "/bin/sh",
-        "/usr/bin/sh",
-    ];
-    PLAIN_SHELLS.contains(&cmdline)
+        // A TUI is the reason the terminal is open; reopen it in place.
+        if let Some(tui) =
+            process.find_descendant(client.pid, &config.tui_programs(), PROCESS_SEARCH_DEPTH)
+        {
+            let argv = process
+                .cmdline(tui)
+                .or_else(|| process.comm(tui).map(|c| vec![c]))?;
+            let argv: Vec<String> = argv
+                .into_iter()
+                .filter(|a| !VOLATILE_ARG_PREFIXES.iter().any(|p| a.starts_with(p)))
+                .collect();
+            let cwd = process
+                .cwd(tui)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or(home);
+            return Some(term.build_argv(&cwd, Some(&argv)));
+        }
+
+        // Otherwise reopen the terminal where its shell was standing.
+        let shell = process.find_descendant(client.pid, &config.shells(), PROCESS_SEARCH_DEPTH);
+        let cwd = shell
+            .and_then(|pid| process.cwd(pid))
+            .or_else(|| process.cwd(client.pid))
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or(home);
+        return Some(term.build_argv(&cwd, None));
+    }
+
+    let mut argv = split_blob_cmdline(process.cmdline(client.pid)?);
+    if let Some(app) = config.apps.get(&client.class) {
+        apply_app_overrides(&mut argv, app);
+    }
+    if argv.is_empty() {
+        return None;
+    }
+    Some(argv)
 }
 
-fn build_session_client(
-    client: &crate::hyprctl::HyprClient,
-    monitor_map: &HashMap<i32, String>,
-    process_info: &dyn ProcessInfoProvider,
-    config: &Config,
-) -> SessionClient {
-    let monitor_name = monitor_map
-        .get(&client.monitor)
-        .cloned()
-        .unwrap_or_else(|| format!("monitor-{}", client.monitor));
+/// Recover an argv that the process flattened into one blob.
+///
+/// Chromium-family browsers rewrite their own argv so the process title reads
+/// as a single string, and `/proc/<pid>/cmdline` then holds one entry with
+/// spaces instead of NUL-separated arguments. Replaying that verbatim asks
+/// the shell to run a binary whose name is the entire command line.
+///
+/// Splitting is only safe when the leading token is itself executable, which
+/// leaves genuine paths containing spaces untouched.
+pub fn split_blob_cmdline(argv: Vec<String>) -> Vec<String> {
+    if argv.len() != 1 {
+        return argv;
+    }
+    let Some((first, rest)) = argv[0].split_once(' ') else {
+        return argv;
+    };
+    if rest.is_empty() {
+        return argv;
+    }
+    let looks_executable =
+        std::path::Path::new(first).is_file() || which::which(first).is_ok();
+    if !looks_executable {
+        return argv;
+    }
+    argv[0].split_whitespace().map(String::from).collect()
+}
 
-    let app_config = config.apps.get(&client.class);
-    let launch = build_launch_info(client, app_config, process_info);
-
-    SessionClient {
-        class: client.class.clone(),
-        title: client.title.clone(),
-        workspace: client.workspace.id,
-        monitor: monitor_name,
-        at: client.at,
-        size: client.size,
-        floating: client.floating,
-        fullscreen: client.fullscreen,
-        focus_history_id: client.focus_history_id,
-        launch,
+fn apply_app_overrides(argv: &mut Vec<String>, app: &AppConfig) {
+    if let Some(binary) = &app.binary {
+        if argv.is_empty() {
+            argv.push(binary.clone());
+        } else {
+            argv[0] = binary.clone();
+        }
+    }
+    if !app.strip_args.is_empty() {
+        argv.retain(|a| !app.strip_args.iter().any(|s| a.starts_with(s)));
     }
 }
 
-fn build_launch_info(
-    client: &crate::hyprctl::HyprClient,
-    app_config: Option<&AppConfig>,
-    process_info: &dyn ProcessInfoProvider,
-) -> LaunchInfo {
-    let binary = app_config
-        .and_then(|a| a.binary.clone())
-        .unwrap_or_else(|| client.class.clone());
+/// Profile windows for every configured browser that is currently open.
+fn collect_browser_profiles(clients: &[HyprClient], config: &Config) -> Vec<BrowserProfile> {
+    let open: HashSet<&str> = clients
+        .iter()
+        .filter(|c| c.is_restorable())
+        .map(|c| c.class.as_str())
+        .collect();
 
-    let capture_cwd = app_config.and_then(|a| a.capture_cwd).unwrap_or(false);
-    let capture_cmd = app_config
-        .and_then(|a| a.capture_last_command)
-        .unwrap_or(false);
-
-    let mut args: Vec<String> = Vec::new();
-    let mut hint: Option<String> = None;
-
-    if capture_cwd || capture_cmd {
-        if let Ok(children) = process_info.get_children(client.pid) {
-            // Find the actual shell child, skipping helper processes like
-            // kitty's "kitten __atexit__" which has CWD=/home but is not the
-            // interactive shell.
-            const SKIP_COMMANDS: &[&str] = &["kitten", "/usr/bin/kitten"];
-            if let Some(shell) = children
-                .iter()
-                .filter(|c| !c.cwd.as_os_str().is_empty())
-                .find(|c| !SKIP_COMMANDS.iter().any(|s| c.cmdline.starts_with(s)))
-            {
-                if capture_cwd {
-                    args.push("--directory".to_string());
-                    args.push(shell.cwd.to_string_lossy().to_string());
-                }
-
-                if capture_cmd {
-                    // Prefer a grandchild process (the command running inside the shell),
-                    // but only when it is not itself a plain shell.
-                    if let Ok(grandchildren) = process_info.get_children(shell.pid) {
-                        if let Some(cmd) = grandchildren
-                            .iter()
-                            .find(|gc| !gc.cmdline.is_empty() && !is_plain_shell(&gc.cmdline))
-                        {
-                            hint = Some(cmd.cmdline.clone());
-                        }
-                    }
-
-                    // Fall back to the shell's own cmdline if it is not a plain shell.
-                    if hint.is_none()
-                        && !shell.cmdline.is_empty()
-                        && !is_plain_shell(&shell.cmdline)
-                    {
-                        hint = Some(shell.cmdline.clone());
-                    }
-                }
+    let mut out = Vec::new();
+    for (class, browser) in &config.browsers {
+        if !open.contains(class.as_str()) || browser.profile_workspaces.is_empty() {
+            continue;
+        }
+        match browsers::read_profiles(class, browser) {
+            Ok(profiles) => out.extend(browsers::assign_workspaces(profiles, browser)),
+            Err(e) => {
+                eprintln!("hyprwake: could not read {class} profiles: {e}");
+                crate::logging::log(format!("browser profile read failed for {class}: {e}"));
             }
         }
     }
-
-    // Render hint through the app-level template when one is configured.
-    if let (Some(h), Some(ac)) = (&hint, app_config) {
-        if let Some(template) = &ac.hint_template {
-            let cwd_str = args
-                .iter()
-                .skip_while(|s| s.as_str() != "--directory")
-                .nth(1)
-                .map(|s| s.as_str())
-                .unwrap_or("");
-            hint = Some(
-                template
-                    .replace("{last_command}", h)
-                    .replace("{cwd}", cwd_str),
-            );
-        }
-    }
-
-    LaunchInfo {
-        command: binary,
-        args,
-        hint,
-    }
+    out.sort_by(|a, b| a.directory.cmp(&b.directory));
+    out
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────
+fn home_dir() -> String {
+    dirs::home_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "/".to_string())
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AppConfig, Config, FilterConfig, GeneralConfig};
-    use crate::hyprctl::{
-        HyprClient as RawClient, HyprMonitor as RawMonitor, HyprWorkspace as RawWorkspace,
-        HyprctlClient, HyprctlError,
-    };
-    use crate::process::{ChildProcess, ProcessError, ProcessInfoProvider};
-    use std::collections::HashMap;
-    use std::path::PathBuf;
+    use crate::hyprctl::mock::MockHyprctl;
+    use crate::process::mock::MockProcessInfo;
+    use crate::workspace::WorkspaceRef;
 
-    // ── Mock: HyprctlClient ──────────────────────────────────────────────
-
-    struct MockHyprctl {
-        clients: Vec<RawClient>,
-        monitors: Vec<RawMonitor>,
-    }
-
-    impl HyprctlClient for MockHyprctl {
-        fn get_clients(&self) -> Result<Vec<RawClient>, HyprctlError> {
-            Ok(self.clients.clone())
-        }
-        fn get_monitors(&self) -> Result<Vec<RawMonitor>, HyprctlError> {
-            Ok(self.monitors.clone())
-        }
-        fn dispatch(&self, _: &str) -> Result<(), HyprctlError> {
-            Ok(())
-        }
-        fn get_hyprland_version(&self) -> Result<String, HyprctlError> {
-            Ok("0.54.1".to_string())
-        }
-    }
-
-    // ── Mock: ProcessInfoProvider ────────────────────────────────────────
-
-    struct MockProcess {
-        cwds: HashMap<u32, PathBuf>,
-        children: HashMap<u32, Vec<ChildProcess>>,
-    }
-
-    impl ProcessInfoProvider for MockProcess {
-        fn get_cwd(&self, pid: u32) -> Result<PathBuf, ProcessError> {
-            self.cwds
-                .get(&pid)
-                .cloned()
-                .ok_or(ProcessError::NotFound(pid))
-        }
-        fn get_children(&self, pid: u32) -> Result<Vec<ChildProcess>, ProcessError> {
-            Ok(self.children.get(&pid).cloned().unwrap_or_default())
-        }
-    }
-
-    // ── Helpers ──────────────────────────────────────────────────────────
-
-    fn make_hypr_client(class: &str, pid: u32) -> RawClient {
-        RawClient {
-            address: "0xdeadbeef".to_string(),
+    fn client(class: &str, pid: i32) -> HyprClient {
+        HyprClient {
+            address: format!("0x{pid}"),
             class: class.to_string(),
-            title: format!("{class} window"),
-            workspace: RawWorkspace {
-                id: 1,
-                name: "1".to_string(),
-            },
+            initial_class: class.to_string(),
+            title: "t".to_string(),
+            workspace: WorkspaceRef::new(1, "1"),
             monitor: 0,
             at: [0, 0],
             size: [800, 600],
             floating: false,
+            pinned: false,
             fullscreen: 0,
             focus_history_id: 0,
             pid,
+            mapped: true,
         }
     }
 
-    fn make_monitor(name: &str) -> RawMonitor {
-        make_monitor_with_id(0, name)
+    fn config() -> Config {
+        toml::from_str("").unwrap()
     }
-
-    fn make_monitor_with_id(id: i32, name: &str) -> RawMonitor {
-        RawMonitor {
-            id,
-            name: name.to_string(),
-            width: 1920,
-            height: 1080,
-            transform: 0,
-        }
-    }
-
-    fn empty_process() -> MockProcess {
-        MockProcess {
-            cwds: HashMap::new(),
-            children: HashMap::new(),
-        }
-    }
-
-    // ── Test 1: filter ignored classes ───────────────────────────────────
 
     #[test]
-    fn test_capture_filters_ignored_classes() {
-        let hyprctl = MockHyprctl {
-            clients: vec![
-                make_hypr_client("kitty", 1001),
-                make_hypr_client("waybar", 1002),
-                make_hypr_client("brave-browser", 1003),
-            ],
-            monitors: vec![make_monitor("DP-1")],
-        };
-
-        let config = Config {
-            general: GeneralConfig::default(),
-            filters: FilterConfig {
-                ignore_classes: vec!["waybar".to_string()],
-            },
-            apps: HashMap::new(),
-        };
-
-        let session =
-            capture_session("test", &hyprctl, &empty_process(), &config).expect("capture failed");
-
-        assert_eq!(session.clients.len(), 2, "waybar must be excluded");
-        let classes: Vec<&str> = session.clients.iter().map(|c| c.class.as_str()).collect();
-        assert!(classes.contains(&"kitty"), "kitty must be present");
-        assert!(
-            classes.contains(&"brave-browser"),
-            "brave-browser must be present"
+    fn plain_app_replays_its_own_argv() {
+        let mut proc = MockProcessInfo::default();
+        proc.add(
+            50,
+            "chrome",
+            &["/opt/google/chrome/chrome", "--ozone-platform=wayland"],
+            "/home/rc",
         );
-        assert!(!classes.contains(&"waybar"), "waybar must be absent");
+        let argv = relaunch_argv(&client("google-chrome", 50), &proc, &config()).unwrap();
+        assert_eq!(argv[0], "/opt/google/chrome/chrome");
+        assert_eq!(argv[1], "--ozone-platform=wayland");
     }
 
-    // ── Test 2: kitty with CWD capture ───────────────────────────────────
+    #[test]
+    fn terminal_reopens_at_its_shell_directory() {
+        let mut proc = MockProcessInfo::default();
+        proc.add(10, "foot", &["foot"], "/home/rc");
+        proc.add(11, "fish", &["fish"], "/home/rc/Work/hyprwake");
+        proc.link(10, 11);
+        let argv = relaunch_argv(&client("foot", 10), &proc, &config()).unwrap();
+        assert_eq!(argv, vec!["foot", "-D", "/home/rc/Work/hyprwake"]);
+    }
 
     #[test]
-    fn test_capture_builds_kitty_launch_with_cwd() {
-        const KITTY_PID: u32 = 2001;
-        const SHELL_PID: u32 = 2002;
+    fn terminal_running_a_tui_reopens_the_tui() {
+        let mut proc = MockProcessInfo::default();
+        proc.add(10, "foot", &["foot"], "/home/rc");
+        proc.add(11, "fish", &["fish"], "/home/rc");
+        proc.add(12, "nvim", &["nvim", "src/main.rs"], "/home/rc/Work");
+        proc.link(10, 11).link(11, 12);
+        let argv = relaunch_argv(&client("foot", 10), &proc, &config()).unwrap();
+        assert_eq!(
+            argv,
+            vec!["foot", "-D", "/home/rc/Work", "nvim", "src/main.rs"]
+        );
+    }
 
-        let hyprctl = MockHyprctl {
-            clients: vec![make_hypr_client("kitty", KITTY_PID)],
-            monitors: vec![make_monitor("DP-1")],
-        };
+    #[test]
+    fn volatile_tui_arguments_are_dropped() {
+        let mut proc = MockProcessInfo::default();
+        proc.add(10, "foot", &["foot"], "/home/rc");
+        proc.add(
+            11,
+            "yazi",
+            &["yazi", "--cwd-file=/run/user/1000/yazi-cwd.XXXX"],
+            "/home/rc/Downloads",
+        );
+        proc.link(10, 11);
+        let argv = relaunch_argv(&client("foot", 10), &proc, &config()).unwrap();
+        assert_eq!(argv, vec!["foot", "-D", "/home/rc/Downloads", "yazi"]);
+    }
 
-        let mut app_configs = HashMap::new();
-        app_configs.insert(
-            "kitty".to_string(),
+    #[test]
+    fn terminal_falls_back_to_its_own_cwd_without_a_shell() {
+        let mut proc = MockProcessInfo::default();
+        proc.add(10, "foot", &["foot"], "/var/tmp");
+        let argv = relaunch_argv(&client("foot", 10), &proc, &config()).unwrap();
+        assert_eq!(argv, vec!["foot", "-D", "/var/tmp"]);
+    }
+
+    #[test]
+    fn a_flattened_argv_is_split_back_apart() {
+        // Chromium rewrites its argv into one blob; /bin/sh is a stand-in for
+        // "the leading token really is an executable".
+        let argv = vec!["/bin/sh --flag-one --flag-two=x,y".to_string()];
+        assert_eq!(
+            split_blob_cmdline(argv),
+            vec!["/bin/sh", "--flag-one", "--flag-two=x,y"]
+        );
+    }
+
+    #[test]
+    fn a_path_with_spaces_is_left_alone() {
+        // "/home/rc/my" is not an executable, so this is one real argument.
+        let argv = vec!["/home/rc/my program".to_string()];
+        assert_eq!(split_blob_cmdline(argv.clone()), argv);
+    }
+
+    #[test]
+    fn a_normal_argv_is_untouched() {
+        let argv = vec!["foot".to_string(), "-D".to_string(), "/tmp".to_string()];
+        assert_eq!(split_blob_cmdline(argv.clone()), argv);
+    }
+
+    #[test]
+    fn a_single_bare_binary_is_untouched() {
+        let argv = vec!["/bin/sh".to_string()];
+        assert_eq!(split_blob_cmdline(argv.clone()), argv);
+    }
+
+    #[test]
+    fn a_dead_process_yields_no_argv() {
+        let proc = MockProcessInfo::default();
+        assert!(relaunch_argv(&client("google-chrome", 50), &proc, &config()).is_none());
+    }
+
+    #[test]
+    fn app_overrides_replace_the_binary_and_strip_arguments() {
+        let mut cfg = config();
+        cfg.apps.insert(
+            "signal".to_string(),
+            AppConfig {
+                binary: Some("signal-desktop".to_string()),
+                no_spawn: false,
+                strip_args: vec!["--start-in-tray".to_string()],
+            },
+        );
+        let mut proc = MockProcessInfo::default();
+        proc.add(
+            70,
+            "signal",
+            &["/usr/lib/signal/signal", "--start-in-tray"],
+            "/",
+        );
+        let argv = relaunch_argv(&client("signal", 70), &proc, &cfg).unwrap();
+        assert_eq!(argv, vec!["signal-desktop"]);
+    }
+
+    #[test]
+    fn capture_skips_ignored_and_unmapped_windows() {
+        let mut bar = client("waybar", 20);
+        bar.class = "waybar".to_string();
+        let mut hidden = client("foot", 21);
+        hidden.mapped = false;
+
+        let mut proc = MockProcessInfo::default();
+        proc.add(20, "waybar", &["waybar"], "/");
+        proc.add(21, "foot", &["foot"], "/");
+        proc.add(22, "foot", &["foot"], "/home/rc");
+
+        let hypr = MockHyprctl::new(vec![vec![bar, hidden, client("foot", 22)]]);
+        let session = capture_session("latest", &hypr, &proc, &config()).unwrap();
+        assert_eq!(session.clients.len(), 1);
+        assert_eq!(session.clients[0].launch.argv[0], "foot");
+    }
+
+    #[test]
+    fn only_the_first_window_of_a_process_is_spawned() {
+        let mut proc = MockProcessInfo::default();
+        proc.add(90, "chrome", &["/opt/google/chrome/chrome"], "/home/rc");
+        let hypr = MockHyprctl::new(vec![vec![
+            client("google-chrome", 90),
+            client("google-chrome", 90),
+        ]]);
+        let session = capture_session("latest", &hypr, &proc, &config()).unwrap();
+        assert_eq!(session.clients.len(), 2);
+        assert!(session.clients[0].launch.spawn);
+        assert!(
+            !session.clients[1].launch.spawn,
+            "the second window comes back with the process, not from a new launch"
+        );
+        assert_eq!(session.spawn_count(), 1);
+    }
+
+    #[test]
+    fn no_spawn_apps_are_recorded_but_never_launched() {
+        let mut cfg = config();
+        cfg.apps.insert(
+            "Spotify".to_string(),
             AppConfig {
                 binary: None,
-                capture_cwd: Some(true),
-                capture_last_command: None,
-                hint_template: None,
-                profile_workspaces: None,
-                default_workspace: None,
+                no_spawn: true,
+                strip_args: vec![],
             },
         );
-
-        let config = Config {
-            general: GeneralConfig::default(),
-            filters: FilterConfig {
-                ignore_classes: vec![],
-            },
-            apps: app_configs,
-        };
-
-        let mut children: HashMap<u32, Vec<ChildProcess>> = HashMap::new();
-        children.insert(
-            KITTY_PID,
-            vec![ChildProcess {
-                pid: SHELL_PID,
-                cwd: PathBuf::from("/home/user/project"),
-                cmdline: "zsh".to_string(),
-            }],
-        );
-
-        let process = MockProcess {
-            cwds: HashMap::new(),
-            children,
-        };
-
-        let session = capture_session("test", &hyprctl, &process, &config).expect("capture failed");
-
+        let mut proc = MockProcessInfo::default();
+        proc.add(80, "spotify", &["spotify"], "/");
+        let hypr = MockHyprctl::new(vec![vec![client("Spotify", 80)]]);
+        let session = capture_session("latest", &hypr, &proc, &cfg).unwrap();
         assert_eq!(session.clients.len(), 1);
-        let launch = &session.clients[0].launch;
-        assert_eq!(launch.command, "kitty");
+        assert!(!session.clients[0].launch.spawn);
+    }
+
+    #[test]
+    fn workspace_identity_survives_capture() {
+        let mut scratch = client("foot", 30);
+        scratch.workspace = WorkspaceRef::new(-99, "special:magic");
+        let mut proc = MockProcessInfo::default();
+        proc.add(30, "foot", &["foot"], "/home/rc");
+        let hypr = MockHyprctl::new(vec![vec![scratch]]);
+        let session = capture_session("latest", &hypr, &proc, &config()).unwrap();
         assert_eq!(
-            launch.args,
-            vec!["--directory", "/home/user/project"],
-            "args must contain --directory <cwd>"
-        );
-        assert!(
-            launch.hint.is_none(),
-            "no hint expected when capture_last_command is off"
+            session.clients[0].workspace.selector(),
+            "special:magic",
+            "scratchpad windows must not collapse to a numeric id"
         );
     }
 
-    // ── Test 3: generic app — binary override, no CWD ────────────────────
-
     #[test]
-    fn test_capture_builds_generic_app_launch() {
-        const BRAVE_PID: u32 = 3001;
-
-        let hyprctl = MockHyprctl {
-            clients: vec![make_hypr_client("brave-browser", BRAVE_PID)],
-            monitors: vec![make_monitor("HDMI-A-1")],
-        };
-
-        let mut app_configs = HashMap::new();
-        app_configs.insert(
-            "brave-browser".to_string(),
-            AppConfig {
-                binary: Some("brave".to_string()),
-                capture_cwd: None,
-                capture_last_command: None,
-                hint_template: None,
-                profile_workspaces: None,
-                default_workspace: None,
-            },
-        );
-
-        let config = Config {
-            general: GeneralConfig::default(),
-            filters: FilterConfig {
-                ignore_classes: vec![],
-            },
-            apps: app_configs,
-        };
-
-        let session =
-            capture_session("test", &hyprctl, &empty_process(), &config).expect("capture failed");
-
-        assert_eq!(session.clients.len(), 1);
-        let launch = &session.clients[0].launch;
-        assert_eq!(launch.command, "brave", "binary override must be applied");
-        assert!(
-            launch.args.is_empty(),
-            "no args expected without CWD capture"
-        );
-        assert!(launch.hint.is_none());
-    }
-
-    // ── Additional: monitor name resolution ───────────────────────────────
-
-    #[test]
-    fn test_capture_resolves_monitor_name_from_index() {
-        let hyprctl = MockHyprctl {
-            clients: vec![make_hypr_client("kitty", 4001)],
-            monitors: vec![make_monitor("DP-2")],
-        };
-
-        let config = Config {
-            general: GeneralConfig::default(),
-            filters: FilterConfig {
-                ignore_classes: vec![],
-            },
-            apps: HashMap::new(),
-        };
-
-        let session =
-            capture_session("test", &hyprctl, &empty_process(), &config).expect("capture failed");
-
-        assert_eq!(session.clients[0].monitor, "DP-2");
-    }
-
-    // ── Additional: version propagated ───────────────────────────────────
-
-    #[test]
-    fn test_capture_propagates_hyprland_version() {
-        let hyprctl = MockHyprctl {
-            clients: vec![],
-            monitors: vec![],
-        };
-        let config = Config::default();
-
-        let session =
-            capture_session("test", &hyprctl, &empty_process(), &config).expect("capture failed");
-
-        assert_eq!(session.hyprland_version, "0.54.1");
-    }
-
-    // ── Task 1: hint must filter plain-shell grandchildren ───────────────
-
-    #[test]
-    fn test_capture_hint_filters_plain_shell_grandchild() {
-        const KITTY_PID: u32 = 5001;
-        const SHELL_PID: u32 = 5002;
-        const GC_PID: u32 = 5003;
-
-        let hyprctl = MockHyprctl {
-            clients: vec![make_hypr_client("kitty", KITTY_PID)],
-            monitors: vec![make_monitor("DP-1")],
-        };
-
-        let mut app_configs = HashMap::new();
-        app_configs.insert(
-            "kitty".to_string(),
-            AppConfig {
-                binary: None,
-                capture_cwd: Some(true),
-                capture_last_command: Some(true),
-                hint_template: None,
-                profile_workspaces: None,
-                default_workspace: None,
-            },
-        );
-
-        let config = Config {
-            general: GeneralConfig::default(),
-            filters: FilterConfig {
-                ignore_classes: vec![],
-            },
-            apps: app_configs,
-        };
-
-        let mut children: HashMap<u32, Vec<ChildProcess>> = HashMap::new();
-        // Shell child of kitty
-        children.insert(
-            KITTY_PID,
-            vec![ChildProcess {
-                pid: SHELL_PID,
-                cwd: PathBuf::from("/home/user"),
-                cmdline: "zsh".to_string(),
-            }],
-        );
-        // Grandchild is also a plain shell (e.g. nested /bin/zsh)
-        children.insert(
-            SHELL_PID,
-            vec![ChildProcess {
-                pid: GC_PID,
-                cwd: PathBuf::from("/home/user"),
-                cmdline: "/bin/zsh".to_string(),
-            }],
-        );
-
-        let process = MockProcess {
-            cwds: HashMap::new(),
-            children,
-        };
-
-        let session = capture_session("test", &hyprctl, &process, &config).expect("capture failed");
-
-        assert_eq!(session.clients.len(), 1);
-        assert!(
-            session.clients[0].launch.hint.is_none(),
-            "hint must be None when grandchild is a plain shell like /bin/zsh"
-        );
-    }
-
-    // ── Task 2: monitor resolved by ID, not array index ─────────────────
-
-    #[test]
-    fn test_capture_resolves_monitor_by_id_not_index() {
-        // Array order: [DP-4 (id=1), DP-5 (id=0)]
-        // A client with monitor:0 should resolve to DP-5 (id=0), NOT DP-4 (index 0).
-        let mut client = make_hypr_client("kitty", 6001);
-        client.monitor = 0;
-
-        let hyprctl = MockHyprctl {
-            clients: vec![client],
-            monitors: vec![
-                make_monitor_with_id(1, "DP-4"),
-                make_monitor_with_id(0, "DP-5"),
-            ],
-        };
-
-        let config = Config {
-            general: GeneralConfig::default(),
-            filters: FilterConfig {
-                ignore_classes: vec![],
-            },
-            apps: HashMap::new(),
-        };
-
-        let session =
-            capture_session("test", &hyprctl, &empty_process(), &config).expect("capture failed");
-
-        assert_eq!(
-            session.clients[0].monitor, "DP-5",
-            "monitor must be resolved by ID (0 → DP-5), not by array index (0 → DP-4)"
-        );
-    }
-
-    // ── Task 4: brave_profiles field is populated when Brave is present ──
-
-    #[test]
-    fn test_capture_includes_brave_profiles_field() {
-        let hyprctl = MockHyprctl {
-            clients: vec![make_hypr_client("brave-browser", 7001)],
-            monitors: vec![make_monitor("DP-1")],
-        };
-        let config = Config {
-            general: GeneralConfig::default(),
-            filters: FilterConfig {
-                ignore_classes: vec![],
-            },
-            apps: HashMap::new(),
-        };
-
-        let session = capture_session("test", &hyprctl, &empty_process(), &config).unwrap();
-        // brave_profiles is populated from Local State if Brave is installed;
-        // in test env it may be empty or populated — just verify it doesn't error.
-        // The field exists and is accessible.
-        let _ = &session.brave_profiles;
+    fn monitor_ids_resolve_to_names() {
+        let mut proc = MockProcessInfo::default();
+        proc.add(40, "foot", &["foot"], "/home/rc");
+        let hypr = MockHyprctl::new(vec![vec![client("foot", 40)]]);
+        let session = capture_session("latest", &hypr, &proc, &config()).unwrap();
+        assert_eq!(session.clients[0].monitor, "eDP-1");
     }
 }

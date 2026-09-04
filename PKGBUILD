@@ -1,15 +1,15 @@
-# Maintainer: iSorensen
-pkgname=hyprflow
+# Maintainer: Rumen Cholakov
+pkgname=hyprwake
 pkgver=0.1.0
 pkgrel=1
-pkgdesc="Save and restore Hyprland window sessions"
+pkgdesc="Save and restore Hyprland sessions, with terminal, TUI and Omarchy support"
 arch=('x86_64')
-url="https://github.com/isorensen/hyprflow"
+url="https://github.com/rumen-cholakov/hyprwake"
 license=('MIT')
 depends=('hyprland')
 makedepends=('cargo')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('ec2e52fed7cb6af217301ac514fa949630814dfa0428d087c8ea79674b098eb7')
+sha256sums=('SKIP')
 
 prepare() {
     cd "$pkgname-$pkgver"

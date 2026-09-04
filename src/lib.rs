@@ -1,8 +1,14 @@
 pub mod autosave;
-pub mod brave;
+pub mod browsers;
 pub mod capture;
 pub mod config;
+pub mod doctor;
 pub mod hyprctl;
+pub mod logging;
+pub mod lua;
+pub mod omarchy;
 pub mod process;
 pub mod restore;
+pub mod save;
 pub mod session;
+pub mod workspace;
