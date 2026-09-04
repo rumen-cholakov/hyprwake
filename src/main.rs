@@ -446,13 +446,23 @@ fn seeded_config() -> String {
     out.push_str("# profile reopened in its own window. Without a mapping the browser is\n");
     out.push_str("# restored as an ordinary window.\n");
     for (class, browser) in hyprwake::browsers::known_browsers() {
-        if !hyprwake::browsers::local_state_path(&browser).exists() {
+        if !hyprwake::browsers::state_path(&browser).exists() {
             continue;
         }
         out.push_str(&format!("# [browsers.\"{class}\"]\n"));
         out.push_str(&format!("# binary = \"{}\"\n", browser.binary));
-        out.push_str(&format!("# local_state = \"{}\"\n", browser.local_state));
-        out.push_str("# profile_workspaces = { \"Default\" = \"2\" }\n\n");
+        match browser.kind {
+            hyprwake::config::BrowserKind::Chromium => {
+                out.push_str("# kind = \"chromium\"\n");
+                out.push_str(&format!("# local_state = \"{}\"\n", browser.local_state));
+                out.push_str("# profile_workspaces = { \"Default\" = \"2\" }\n\n");
+            }
+            hyprwake::config::BrowserKind::Firefox => {
+                out.push_str("# kind = \"firefox\"\n");
+                out.push_str(&format!("# profiles_ini = \"{}\"\n", browser.profiles_ini));
+                out.push_str("# profile_workspaces = { \"default-release\" = \"2\" }\n\n");
+            }
+        }
     }
 
     out

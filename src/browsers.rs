@@ -5,7 +5,7 @@
 //! has to come from the browser's own `Local State`, and each profile is
 //! reopened explicitly with `--profile-directory`.
 
-use crate::config::BrowserConfig;
+use crate::config::{BrowserConfig, BrowserKind};
 use crate::session::BrowserProfile;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -41,26 +41,98 @@ pub fn known_browsers() -> HashMap<String, BrowserConfig> {
         ),
         ("vivaldi-stable", "vivaldi-stable", "vivaldi/Local State"),
     ];
-    entries
+    let mut out: HashMap<String, BrowserConfig> = entries
         .into_iter()
         .map(|(class, binary, state)| {
             (
                 class.to_string(),
                 BrowserConfig {
                     binary: binary.to_string(),
+                    kind: BrowserKind::Chromium,
                     local_state: state.to_string(),
+                    profiles_ini: String::new(),
                     profile_workspaces: HashMap::new(),
                     default_workspace: None,
                 },
             )
         })
-        .collect()
+        .collect();
+
+    // Firefox keeps its profile list in the home directory, not the config
+    // directory, and selects profiles by name rather than by directory.
+    let firefox = [
+        ("firefox", "firefox", ".mozilla/firefox/profiles.ini"),
+        ("zen", "zen-browser", ".zen/profiles.ini"),
+        ("zen-alpha", "zen-browser", ".zen/profiles.ini"),
+        ("librewolf", "librewolf", ".librewolf/profiles.ini"),
+    ];
+    out.extend(firefox.into_iter().map(|(class, binary, ini)| {
+        (
+            class.to_string(),
+            BrowserConfig {
+                binary: binary.to_string(),
+                kind: BrowserKind::Firefox,
+                local_state: String::new(),
+                profiles_ini: ini.to_string(),
+                profile_workspaces: HashMap::new(),
+                default_workspace: None,
+            },
+        )
+    }));
+    out
 }
 
-pub fn local_state_path(config: &BrowserConfig) -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.config"))
-        .join(&config.local_state)
+/// Where this browser keeps the list of its profiles.
+pub fn state_path(config: &BrowserConfig) -> PathBuf {
+    match config.kind {
+        BrowserKind::Chromium => dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("~/.config"))
+            .join(&config.local_state),
+        BrowserKind::Firefox => dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("~"))
+            .join(&config.profiles_ini),
+    }
+}
+
+/// Parse Firefox's `profiles.ini`.
+///
+/// Profiles are selected by name on the command line, so the name is both the
+/// identity and the selector; the on-disk path is not needed.
+pub fn parse_profiles_ini(class: &str, content: &str) -> Vec<BrowserProfile> {
+    let mut out = Vec::new();
+    let mut in_profile = false;
+    let mut name: Option<String> = None;
+
+    fn flush(class: &str, name: &mut Option<String>, out: &mut Vec<BrowserProfile>) {
+        if let Some(n) = name.take() {
+            out.push(BrowserProfile {
+                class: class.to_string(),
+                directory: n.clone(),
+                name: n,
+                workspace: String::new(),
+            });
+        }
+    }
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            flush(class, &mut name, &mut out);
+            // [General] and [Install...] sections are not profiles.
+            in_profile = line.starts_with("[Profile");
+            continue;
+        }
+        if !in_profile {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("Name=") {
+            if !value.is_empty() {
+                name = Some(value.to_string());
+            }
+        }
+    }
+    flush(class, &mut name, &mut out);
+    out
 }
 
 /// Profiles the browser knows about, in `Local State` order.
@@ -68,12 +140,15 @@ pub fn read_profiles(
     class: &str,
     config: &BrowserConfig,
 ) -> Result<Vec<BrowserProfile>, BrowserError> {
-    let path = local_state_path(config);
+    let path = state_path(config);
     if !path.exists() {
         return Ok(vec![]);
     }
     let content = std::fs::read_to_string(path)?;
-    Ok(parse_profiles(class, &content)?)
+    Ok(match config.kind {
+        BrowserKind::Chromium => parse_profiles(class, &content)?,
+        BrowserKind::Firefox => parse_profiles_ini(class, &content),
+    })
 }
 
 pub fn parse_profiles(class: &str, json: &str) -> Result<Vec<BrowserProfile>, serde_json::Error> {
@@ -125,10 +200,20 @@ pub fn assign_workspaces(
 }
 
 pub fn profile_argv(config: &BrowserConfig, profile: &BrowserProfile) -> Vec<String> {
-    vec![
-        config.binary.clone(),
-        format!("--profile-directory={}", profile.directory),
-    ]
+    match config.kind {
+        BrowserKind::Chromium => vec![
+            config.binary.clone(),
+            format!("--profile-directory={}", profile.directory),
+        ],
+        // -P selects by name; --new-window is what makes a second profile
+        // open its own window rather than raising the running one.
+        BrowserKind::Firefox => vec![
+            config.binary.clone(),
+            "-P".to_string(),
+            profile.name.clone(),
+            "--new-window".to_string(),
+        ],
+    }
 }
 
 #[cfg(test)]
@@ -148,7 +233,9 @@ mod tests {
     fn config_with(mappings: &[(&str, &str)]) -> BrowserConfig {
         BrowserConfig {
             binary: "google-chrome-stable".to_string(),
+            kind: BrowserKind::Chromium,
             local_state: "google-chrome/Local State".to_string(),
+            profiles_ini: String::new(),
             profile_workspaces: mappings
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -220,6 +307,99 @@ mod tests {
             profile_argv(&config_with(&[]), p),
             vec!["google-chrome-stable", "--profile-directory=Profile 1"]
         );
+    }
+
+    const PROFILES_INI: &str = r#"
+[Install4F96D1932A9F858E]
+Default=Profiles/abc.default-release
+Locked=1
+
+[Profile1]
+Name=work
+IsRelative=1
+Path=Profiles/xyz.work
+
+[Profile0]
+Name=default-release
+IsRelative=1
+Path=Profiles/abc.default-release
+Default=1
+
+[General]
+StartWithLastProfile=1
+"#;
+
+    fn firefox_config(mappings: &[(&str, &str)]) -> BrowserConfig {
+        BrowserConfig {
+            binary: "firefox".to_string(),
+            kind: BrowserKind::Firefox,
+            local_state: String::new(),
+            profiles_ini: ".mozilla/firefox/profiles.ini".to_string(),
+            profile_workspaces: mappings
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            default_workspace: None,
+        }
+    }
+
+    #[test]
+    fn firefox_profiles_are_read_by_name() {
+        let profiles = parse_profiles_ini("firefox", PROFILES_INI);
+        let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["work", "default-release"]);
+    }
+
+    #[test]
+    fn install_and_general_sections_are_not_profiles() {
+        // Both carry keys that look profile-ish; only [Profile*] counts.
+        assert_eq!(parse_profiles_ini("firefox", PROFILES_INI).len(), 2);
+    }
+
+    #[test]
+    fn an_empty_profiles_ini_yields_nothing() {
+        assert!(parse_profiles_ini("firefox", "[General]\nStartWithLastProfile=1\n").is_empty());
+    }
+
+    #[test]
+    fn firefox_is_launched_with_a_named_profile_and_its_own_window() {
+        let profiles = parse_profiles_ini("firefox", PROFILES_INI);
+        let work = profiles.iter().find(|p| p.name == "work").unwrap();
+        assert_eq!(
+            profile_argv(&firefox_config(&[]), work),
+            vec!["firefox", "-P", "work", "--new-window"]
+        );
+    }
+
+    #[test]
+    fn firefox_profiles_map_to_workspaces_like_chromium_ones() {
+        let profiles = parse_profiles_ini("firefox", PROFILES_INI);
+        let assigned = assign_workspaces(profiles, &firefox_config(&[("work", "4")]));
+        assert_eq!(assigned.len(), 1);
+        assert_eq!(assigned[0].name, "work");
+        assert_eq!(assigned[0].workspace, "4");
+    }
+
+    #[test]
+    fn firefox_state_lives_in_the_home_directory_not_the_config_dir() {
+        let path = state_path(&firefox_config(&[]));
+        assert!(path.ends_with(".mozilla/firefox/profiles.ini"));
+        assert!(
+            !path.to_string_lossy().contains("/.config/"),
+            "Mozilla keeps profiles.ini in $HOME"
+        );
+    }
+
+    #[test]
+    fn firefox_family_browsers_are_known_out_of_the_box() {
+        let known = known_browsers();
+        for class in ["firefox", "zen", "zen-alpha", "librewolf"] {
+            assert_eq!(
+                known.get(class).map(|b| b.kind),
+                Some(BrowserKind::Firefox),
+                "{class} should be recognised"
+            );
+        }
     }
 
     #[test]

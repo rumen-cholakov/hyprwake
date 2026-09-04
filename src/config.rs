@@ -150,13 +150,31 @@ pub struct AppConfig {
     pub strip_args: Vec<String>,
 }
 
-/// Chromium-family browsers, whose windows all belong to one process, so
-/// profiles have to be read from the browser's own state file.
+/// How a browser family records and selects profiles.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BrowserKind {
+    /// Profiles in `Local State`, selected with `--profile-directory`.
+    #[default]
+    Chromium,
+    /// Profiles in `profiles.ini`, selected by name with `-P`.
+    Firefox,
+}
+
+/// Browsers whose windows all belong to one process, so a window's argv says
+/// nothing about which profile it shows and the profile list has to come from
+/// the browser's own state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserConfig {
     pub binary: String,
-    /// Path to `Local State`, relative to the config dir.
+    #[serde(default)]
+    pub kind: BrowserKind,
+    /// Chromium only: path to `Local State`, relative to the config dir.
+    #[serde(default)]
     pub local_state: String,
+    /// Firefox only: path to `profiles.ini`, relative to the home directory.
+    #[serde(default)]
+    pub profiles_ini: String,
     /// Profile directory -> workspace. Only mapped profiles are restored.
     #[serde(default)]
     pub profile_workspaces: HashMap<String, String>,

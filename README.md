@@ -30,7 +30,7 @@ hyprwake doctor               # what would happen if you did
 | Sessions | a program that can reopen its own session is asked to — Claude Code and codex come back on the same conversation, not a blank one |
 | Floating windows | pixel-exact position and size |
 | Window state | pinned, fullscreen, maximized |
-| Browser profiles | one window per Chromium/Chrome/Brave profile, each on its own workspace |
+| Browser profiles | one window per profile, each on its own workspace — Chromium family via `Local State`, Firefox family via `profiles.ini` |
 | Focus | never stolen — everything is placed silently, in the background |
 
 ## How it works
@@ -181,8 +181,15 @@ no_spawn = true              # record the window, never launch it
 
 [browsers.google-chrome]
 binary = "google-chrome-stable"
+kind = "chromium"                     # profiles from Local State
 local_state = "google-chrome/Local State"
 profile_workspaces = { "Default" = "2", "Work" = "6" }
+
+[browsers.zen]
+binary = "zen-browser"
+kind = "firefox"                      # profiles from profiles.ini, by name
+profiles_ini = ".zen/profiles.ini"
+profile_workspaces = { "default" = "2", "work" = "6" }
 ```
 
 ## What it cannot do
