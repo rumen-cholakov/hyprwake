@@ -73,7 +73,27 @@ jobs:
 
       - name: Release notes
         run: |
-          cat > notes.md <<EOF
+          version="${{ steps.archive.outputs.version }}"
+
+          # What changed comes from the CHANGELOG section for this version.
+          # GitHub's generated notes list merged pull requests, which says
+          # nothing useful for a release cut straight from commits.
+          awk -v ver="$version" '
+            $0 ~ "^## " ver "$" { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > changes.md
+
+          if [ ! -s changes.md ]; then
+            echo "no CHANGELOG section for $version" >&2
+            printf 'See the [changelog](https://github.com/%s/blob/main/CHANGELOG.md).\n' \
+              "$GITHUB_REPOSITORY" > changes.md
+          fi
+
+          {
+            cat changes.md
+            cat <<EOF
+
           ## Install
 
           \`\`\`sh
@@ -101,6 +121,9 @@ jobs:
           [omacom/omarchy-pkgs](https://github.com/omacom/omarchy-pkgs) under
           \`pkgbuilds/\`.
           EOF
+          } > notes.md
+
+          echo "----- release notes -----"
           cat notes.md
 
       - uses: softprops/action-gh-release@v2
