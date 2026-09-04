@@ -363,18 +363,37 @@ fn restore_focus(
 }
 
 /// Index into `pending` of the best saved entry for `window`.
+///
+/// Matching is by window class, preferring an entry that is already on this
+/// window's workspace. Failing that, the class each window announced when it
+/// first mapped is tried: applications that rename themselves afterwards --
+/// and some XWayland windows -- would otherwise never be paired, and would
+/// be reported as never having appeared while sitting on screen.
 fn pick_match(pending: &[&SessionClient], window: &crate::hyprctl::HyprClient) -> Option<usize> {
-    let mut fallback = None;
-    for (i, saved) in pending.iter().enumerate() {
-        if saved.class != window.class {
-            continue;
+    let by_class = |saved: &SessionClient| saved.class == window.class;
+    let by_initial = |saved: &SessionClient| {
+        !window.initial_class.is_empty()
+            && (saved.initial_class == window.initial_class
+                || saved.class == window.initial_class
+                || (!saved.initial_class.is_empty() && saved.initial_class == window.class))
+    };
+
+    for matches in [&by_class as &dyn Fn(&SessionClient) -> bool, &by_initial] {
+        let mut fallback = None;
+        for (i, saved) in pending.iter().enumerate() {
+            if !matches(saved) {
+                continue;
+            }
+            if saved.workspace.same(&window.workspace) {
+                return Some(i);
+            }
+            fallback.get_or_insert(i);
         }
-        if saved.workspace.same(&window.workspace) {
-            return Some(i);
+        if fallback.is_some() {
+            return fallback;
         }
-        fallback.get_or_insert(i);
     }
-    fallback
+    None
 }
 
 /// Whether a window that arrived on its own still needs correcting.
@@ -619,6 +638,7 @@ mod tests {
     fn saved(class: &str, ws: (i32, &str)) -> SessionClient {
         SessionClient {
             class: class.to_string(),
+            initial_class: class.to_string(),
             title: String::new(),
             workspace: WorkspaceRef::new(ws.0, ws.1),
             monitor: "eDP-1".to_string(),
@@ -634,6 +654,12 @@ mod tests {
                 spawn: true,
             },
         }
+    }
+
+    fn live_renamed(class: &str, initial: &str, ws: (i32, &str), addr: &str) -> HyprClient {
+        let mut c = live(class, ws, addr);
+        c.initial_class = initial.to_string();
+        c
     }
 
     fn live(class: &str, ws: (i32, &str), addr: &str) -> HyprClient {
@@ -786,6 +812,28 @@ mod tests {
         assert_eq!(
             pick_match(&pending, &live("foot", (9, "9"), "0x1")),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn a_window_that_renamed_itself_still_matches() {
+        // Saved as "obsidian"; it maps under that name and then renames.
+        let a = saved("obsidian", (2, "2"));
+        let pending = vec![&a];
+        let window = live_renamed("obsidian-v2", "obsidian", (2, "2"), "0x1");
+        assert_eq!(pick_match(&pending, &window), Some(0));
+    }
+
+    #[test]
+    fn an_exact_class_match_wins_over_an_initial_class_one() {
+        let exact = saved("code", (1, "1"));
+        let renamed = saved("obsidian", (1, "1"));
+        let pending = vec![&renamed, &exact];
+        let window = live_renamed("code", "obsidian", (1, "1"), "0x1");
+        assert_eq!(
+            pick_match(&pending, &window),
+            Some(1),
+            "the window's current class is the stronger signal"
         );
     }
 

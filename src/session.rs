@@ -35,6 +35,12 @@ pub struct Monitor {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionClient {
     pub class: String,
+    /// The class the window announced when it first mapped.
+    ///
+    /// Some applications rename themselves afterwards, and XWayland windows
+    /// can differ; this is what makes them findable again.
+    #[serde(default)]
+    pub initial_class: String,
     /// Kept for the human reading `hyprwake list -v`; titles are set by the
     /// running program and are never used for matching.
     #[serde(default)]
@@ -236,6 +242,7 @@ mod tests {
     fn client(class: &str) -> SessionClient {
         SessionClient {
             class: class.to_string(),
+            initial_class: class.to_string(),
             title: String::new(),
             workspace: WorkspaceRef::new(1, "1"),
             monitor: "eDP-1".to_string(),

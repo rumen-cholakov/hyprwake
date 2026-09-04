@@ -120,6 +120,7 @@ mod tests {
             clients: (0..windows)
                 .map(|i| SessionClient {
                     class: format!("app{i}"),
+                    initial_class: format!("app{i}"),
                     title: String::new(),
                     workspace: WorkspaceRef::new(1, "1"),
                     monitor: String::new(),

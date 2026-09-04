@@ -68,6 +68,7 @@ pub fn capture_session(
 
         clients.push(SessionClient {
             class: raw.class.clone(),
+            initial_class: raw.initial_class.clone(),
             title: raw.title.clone(),
             workspace: raw.workspace.clone(),
             monitor: monitor_names
