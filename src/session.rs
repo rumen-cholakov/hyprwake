@@ -24,6 +24,12 @@ pub struct Monitor {
     pub height: u32,
     #[serde(default)]
     pub transform: u32,
+    /// The workspace this monitor was showing.
+    #[serde(default)]
+    pub active_workspace: Option<WorkspaceRef>,
+    /// Whether this monitor held the focus.
+    #[serde(default)]
+    pub focused: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +86,19 @@ pub struct BrowserProfile {
 }
 
 impl Session {
+    /// The window that had focus, as an index into `clients`.
+    ///
+    /// Hyprland numbers focus history from the focused window outward, so
+    /// the lowest id was the one in use.
+    pub fn focused_client(&self) -> Option<usize> {
+        self.clients
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.focus_history_id >= 0)
+            .min_by_key(|(_, c)| c.focus_history_id)
+            .map(|(i, _)| i)
+    }
+
     pub fn spawn_count(&self) -> usize {
         self.clients.iter().filter(|c| c.launch.spawn).count()
     }

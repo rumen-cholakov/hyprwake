@@ -17,7 +17,7 @@ use crate::logging::log;
 use crate::lua::{lua_long_str, lua_str, shell_join};
 use crate::session::{BrowserProfile, Session, SessionClient};
 use crate::workspace::WorkspaceRef;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -46,6 +46,8 @@ pub struct RestoreReport {
     pub monitors_placed: usize,
     /// Groups whose members were restored but not regrouped.
     pub groups_unrestored: usize,
+    /// Whether the view and focus were put back.
+    pub focus_restored: bool,
     pub details: Vec<String>,
 }
 
@@ -128,12 +130,14 @@ pub fn restore_session(
     if opts.dry_run {
         restore_workspace_monitors(session, hyprctl, opts, &mut report);
         report_groups(session, opts, &mut report);
+        restore_focus(session, &HashMap::new(), hyprctl, opts, &mut report);
         return Ok(report);
     }
 
-    sweep(session, hyprctl, config, opts, initial, &mut report)?;
+    let paired = sweep(session, hyprctl, config, opts, initial, &mut report)?;
     restore_workspace_monitors(session, hyprctl, opts, &mut report);
     report_groups(session, opts, &mut report);
+    restore_focus(session, &paired, hyprctl, opts, &mut report);
     log(format!(
         "restore done: spawned={} placed={} failed={} unmatched={}",
         report.spawned, report.placed, report.failed, report.unmatched
@@ -195,7 +199,16 @@ fn sweep(
     opts: &RestoreOptions,
     initial: Vec<crate::hyprctl::HyprClient>,
     report: &mut RestoreReport,
-) -> Result<(), RestoreError> {
+) -> Result<HashMap<usize, String>, RestoreError> {
+    // Which live window each saved client turned into, so later steps can
+    // address them -- restoring focus needs to name a window.
+    let mut paired: HashMap<usize, String> = HashMap::new();
+    let index_of: HashMap<*const SessionClient, usize> = session
+        .clients
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c as *const SessionClient, i))
+        .collect();
     let mut pending: Vec<&SessionClient> = session.clients.iter().collect();
     let mut seen: HashSet<String> = initial.into_iter().map(|c| c.address).collect();
 
@@ -223,6 +236,9 @@ fn sweep(
             };
             let saved = pending.remove(index);
             seen.insert(window.address.clone());
+            if let Some(i) = index_of.get(&(saved as *const SessionClient)) {
+                paired.insert(*i, window.address.clone());
+            }
 
             if !needs_placement(saved, &window) {
                 continue;
@@ -256,7 +272,60 @@ fn sweep(
     }
 
     report.unmatched = pending.len();
-    Ok(())
+    Ok(paired)
+}
+
+/// Put the desktop back the way it looked: each monitor on its workspace,
+/// and the focus where it was.
+///
+/// Runs last, after every window is in place. Anything earlier would be
+/// undone by the placements that follow.
+fn restore_focus(
+    session: &Session,
+    paired: &HashMap<usize, String>,
+    hyprctl: &dyn HyprctlClient,
+    opts: &RestoreOptions,
+    report: &mut RestoreReport,
+) {
+    let mut calls: Vec<String> = Vec::new();
+
+    for monitor in &session.monitors {
+        let Some(workspace) = &monitor.active_workspace else {
+            continue;
+        };
+        // A special workspace is an overlay, not a resting state.
+        if workspace.is_special() {
+            continue;
+        }
+        calls.push(format!(
+            "hl.dsp.focus({{ monitor = {} }})",
+            lua_str(&monitor.name)
+        ));
+        calls.push(format!(
+            "hl.dsp.focus({{ workspace = {} }})",
+            lua_str(&workspace.selector())
+        ));
+    }
+
+    // Focusing the window last also brings its monitor and workspace forward,
+    // so the session ends where the user left it.
+    if let Some(address) = session.focused_client().and_then(|i| paired.get(&i)) {
+        calls.push(format!(
+            "hl.dsp.focus({{ window = {} }})",
+            lua_str(&format!("address:{address}"))
+        ));
+    }
+
+    for call in calls {
+        if opts.dry_run {
+            report.details.push(format!("  hyprctl dispatch {call}"));
+            continue;
+        }
+        match hyprctl.dispatch(&call) {
+            Ok(()) => report.focus_restored = true,
+            Err(e) => log(format!("focus: {e}")),
+        }
+    }
 }
 
 /// Index into `pending` of the best saved entry for `window`.
@@ -727,6 +796,88 @@ mod tests {
     }
 
     // ── end to end against the mock compositor ──
+
+    // ── focus and the active view ──
+
+    #[test]
+    fn the_focused_client_is_the_lowest_focus_id() {
+        let mut a = saved("foot", (1, "1"));
+        let mut b = saved("code", (2, "2"));
+        a.focus_history_id = 3;
+        b.focus_history_id = 0;
+        let session = session_of(vec![a, b]);
+        assert_eq!(session.focused_client(), Some(1));
+    }
+
+    #[test]
+    fn restore_puts_each_monitor_back_on_its_workspace() {
+        let mut session = session_of(vec![saved("foot", (3, "3"))]);
+        session.monitors = vec![crate::session::Monitor {
+            name: "eDP-1".into(),
+            width: 1920,
+            height: 1080,
+            transform: 0,
+            active_workspace: Some(WorkspaceRef::new(3, "3")),
+            focused: true,
+        }];
+        let hypr = MockHyprctl::new(vec![vec![]]);
+        let report =
+            restore_session(&session, &hypr, &fast_config(), &RestoreOptions::default()).unwrap();
+        assert!(report.focus_restored);
+        let calls = hypr.calls();
+        assert!(calls
+            .iter()
+            .any(|c| c.contains("focus({ monitor = 'eDP-1' })")));
+        assert!(calls
+            .iter()
+            .any(|c| c.contains("focus({ workspace = '3' })")));
+    }
+
+    #[test]
+    fn a_scratchpad_is_not_restored_as_the_resting_view() {
+        // A special workspace is an overlay; coming back with it open is not
+        // where the user left off.
+        let mut session = session_of(vec![saved("foot", (1, "1"))]);
+        session.monitors = vec![crate::session::Monitor {
+            name: "eDP-1".into(),
+            width: 1920,
+            height: 1080,
+            transform: 0,
+            active_workspace: Some(WorkspaceRef::new(-99, "special:magic")),
+            focused: true,
+        }];
+        let hypr = MockHyprctl::new(vec![vec![]]);
+        restore_session(&session, &hypr, &fast_config(), &RestoreOptions::default()).unwrap();
+        assert!(!hypr.calls().iter().any(|c| c.contains("special:magic")));
+    }
+
+    #[test]
+    fn the_focused_window_is_focused_last() {
+        let mut config = fast_config();
+        config.general.sweep_timeout_secs = 1;
+        let mut a = saved("foot", (1, "1"));
+        a.focus_history_id = 0;
+        let session = session_of(vec![a]);
+        // The window appears during the sweep, which is what lets focus name it.
+        let hypr = MockHyprctl::new(vec![vec![], vec![live("foot", (1, "1"), "0xfocus")]]);
+        restore_session(&session, &hypr, &config, &RestoreOptions::default()).unwrap();
+        let calls = hypr.calls();
+        let focus = calls.last().expect("a call was made");
+        assert!(
+            focus.contains("focus({ window = 'address:0xfocus' })"),
+            "focus must come last, after every placement: {focus}"
+        );
+    }
+
+    #[test]
+    fn a_window_that_never_appeared_cannot_be_focused() {
+        let mut a = saved("foot", (1, "1"));
+        a.focus_history_id = 0;
+        let session = session_of(vec![a]);
+        let hypr = MockHyprctl::new(vec![vec![]]); // nothing ever maps
+        restore_session(&session, &hypr, &fast_config(), &RestoreOptions::default()).unwrap();
+        assert!(!hypr.calls().iter().any(|c| c.contains("focus({ window")));
+    }
 
     // ── groups ──
 

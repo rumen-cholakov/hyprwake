@@ -58,6 +58,10 @@ pub struct HyprMonitor {
     pub height: u32,
     #[serde(default)]
     pub transform: u32,
+    #[serde(default, rename = "activeWorkspace")]
+    pub active_workspace: Option<WorkspaceRef>,
+    #[serde(default)]
+    pub focused: bool,
 }
 
 // ── Error type ─────────────────────────────────────────────────────────────
@@ -180,6 +184,8 @@ pub mod mock {
                     width: 1920,
                     height: 1080,
                     transform: 0,
+                    active_workspace: Some(WorkspaceRef::new(1, "1")),
+                    focused: true,
                 }],
                 reject: None,
             }

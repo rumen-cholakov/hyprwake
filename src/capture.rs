@@ -96,6 +96,8 @@ pub fn capture_session(
                 width: m.width,
                 height: m.height,
                 transform: m.transform,
+                active_workspace: m.active_workspace.clone(),
+                focused: m.focused,
             })
             .collect(),
         clients,
