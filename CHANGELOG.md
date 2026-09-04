@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.1.2
+
+### Restore
+
+- **Workspaces return to their monitor.** Every session already recorded which
+  monitor each window was on and restore discarded it, so on more than one
+  display roughly half a layout landed wrong. The monitor is decided by
+  majority of the windows saved on a workspace, applied once the windows
+  exist, and skipped for monitors that are no longer attached — a session
+  saved docked has to restore on the road.
+- **The view and the focus come back.** Each monitor returns to the workspace
+  it was showing, and the window that had focus regains it, as the last step
+  of a restore. Previously you landed wherever the final spawn happened to go.
+- **`--missing-only` merges into a desktop already in use**, launching what is
+  absent and leaving open windows where they are. Refusing a populated desktop
+  remains the default; this is the answer that refusal was asking for.
+- **Stray windows are matched on the class they first announced** as well as
+  their current one, so an application that renames itself after mapping is
+  paired instead of reported as never having appeared.
+- **Window groups are recorded**, and a restore names the groups it could not
+  reassemble. Hyprland 0.56 offers no way to add a window to an existing group
+  by address, so the members come back on the right workspace, ungrouped,
+  rather than silently losing the fact that they belonged together.
+
+### Saving
+
+- **A collapsing session is no longer recorded.** The empty-save guard caught
+  a desktop with nothing left; this catches one that has lost most of its
+  windows seconds after a full snapshot — what a logout, or a restore still in
+  progress, looks like from the outside. A desktop emptied gradually is a real
+  change and is still saved.
+- **The watcher runs as a systemd user unit**, restarted if it dies and tied
+  to the graphical session, instead of a detached process with one life.
+
+### Applications
+
+- **Firefox, Zen and LibreWolf profiles** are restored alongside the Chromium
+  family: profiles read from `profiles.ini` and opened by name.
+
 ## 0.1.1
 
 A verification release: no behaviour changes.
