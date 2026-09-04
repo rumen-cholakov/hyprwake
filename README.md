@@ -115,6 +115,7 @@ hyprwake restore --dry-run      # print every dispatch instead of running it
 hyprwake restore --max-age 7d   # skip a session older than this
 hyprwake restore --force        # restore even though windows are open
 hyprwake restore --missing-only # open only what is missing, leave the rest
+hyprwake diff                   # compare a snapshot with the current desktop
 hyprwake list -v                # saved sessions, and what is in them
 hyprwake delete NAME
 

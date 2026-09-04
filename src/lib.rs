@@ -2,6 +2,7 @@ pub mod autosave;
 pub mod browsers;
 pub mod capture;
 pub mod config;
+pub mod diff;
 pub mod doctor;
 pub mod hyprctl;
 pub mod logging;

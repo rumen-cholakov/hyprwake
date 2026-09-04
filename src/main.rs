@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use hyprwake::autosave;
 use hyprwake::config::{config_path, load_config, sessions_dir, Config};
+use hyprwake::diff;
 use hyprwake::doctor;
 use hyprwake::hyprctl::RealHyprctl;
 use hyprwake::omarchy;
@@ -61,6 +62,8 @@ enum Commands {
     },
     /// List saved sessions
     List,
+    /// Compare a saved session with the current desktop
+    Diff { name: Option<String> },
     /// Delete a saved session
     Delete { name: String },
     /// Show or create the config file
@@ -139,6 +142,7 @@ fn main() -> ExitCode {
             cli.verbose,
         ),
         Commands::List => cmd_list(&dir, cli.verbose),
+        Commands::Diff { name } => cmd_diff(name, &config, &dir),
         Commands::Delete { name } => cmd_delete(&name, &dir),
         Commands::Config { init, force } => cmd_config(init, force, &config),
         Commands::Watch { name, replace } => cmd_watch(name, replace, &config, &dir),
@@ -341,6 +345,42 @@ fn cmd_list(dir: &Path, verbose: bool) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn cmd_diff(name: Option<String>, config: &Config, dir: &Path) -> ExitCode {
+    let name = session_name(name, config);
+    let saved = match load_session(&name, dir) {
+        Ok(session) => session,
+        Err(e) => {
+            eprintln!("hyprwake: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let live = match hyprwake::hyprctl::HyprctlClient::get_clients(&RealHyprctl) {
+        Ok(clients) => clients,
+        Err(e) => {
+            eprintln!("hyprwake: could not read the current desktop: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let result = diff::compare(&saved, &live, config);
+    if result.is_empty() {
+        println!("'{}' matches the current desktop.", saved.name);
+        return ExitCode::SUCCESS;
+    }
+    for item in &result.missing {
+        println!(
+            "Missing:    {} × {} on workspace {}",
+            item.count, item.class, item.workspace
+        );
+    }
+    for item in &result.unexpected {
+        println!(
+            "Unexpected: {} × {} on workspace {}",
+            item.count, item.class, item.workspace
+        );
+    }
+    ExitCode::SUCCESS
 }
 
 fn cmd_delete(name: &str, dir: &Path) -> ExitCode {

@@ -14,6 +14,7 @@ fn help_lists_the_main_commands() {
         .success()
         .stdout(contains("save"))
         .stdout(contains("restore"))
+        .stdout(contains("diff"))
         .stdout(contains("watch"))
         .stdout(contains("status"))
         .stdout(contains("doctor"));
