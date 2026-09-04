@@ -98,6 +98,14 @@ hyprwake doctor
 When `doctor` reports no failures, reboot. Remove the hooks and watcher again
 at any time with `hyprwake uninstall`.
 
+## Help test Hyprwake
+
+If it works (or fails) on your desktop, [open a compatibility report](https://github.com/rumen-cholakov/hyprwake/issues/new?template=compatibility_report.md).
+Include your Omarchy and Hyprland versions, terminal, browser, monitor setup,
+and the result after a reboot. Please remove private paths, window titles, and
+command-line arguments before posting logs or snapshots. Confirmed setups are
+tracked in [the compatibility matrix](docs/COMPATIBILITY.md).
+
 ## Usage
 
 ```sh
