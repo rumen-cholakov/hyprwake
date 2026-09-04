@@ -5,9 +5,11 @@ use crate::config::Config;
 use crate::hyprctl::HyprctlClient;
 use crate::process::ProcessInfoProvider;
 use crate::session::{list_sessions, load_session};
+use serde::Serialize;
 use std::path::Path;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Status {
     Ok,
     Warn,
@@ -24,7 +26,7 @@ impl Status {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Check {
     pub name: String,
     pub status: Status,
@@ -294,6 +296,19 @@ mod tests {
     fn version_gate_tolerates_suffixes() {
         assert!(supports_lua_dispatchers("v0.56.2"));
         assert!(supports_lua_dispatchers("0.56-dirty"));
+    }
+
+    #[test]
+    fn checks_have_a_stable_machine_readable_shape() {
+        let check = Check::new("session", Status::Warn, "none saved");
+        assert_eq!(
+            serde_json::to_value(check).unwrap(),
+            serde_json::json!({
+                "name": "session",
+                "status": "warn",
+                "detail": "none saved",
+            })
+        );
     }
 
     fn window(class: &str, pid: i32) -> HyprClient {

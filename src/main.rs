@@ -101,7 +101,11 @@ enum Commands {
     /// Show whether automatic session restoration is ready
     Status,
     /// Check what would be saved and restored right now
-    Doctor,
+    Doctor {
+        /// Emit checks as JSON for scripts and compatibility reports
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -140,7 +144,7 @@ fn main() -> ExitCode {
         Commands::Install { max_age } => cmd_install(&max_age),
         Commands::Uninstall => cmd_uninstall(),
         Commands::Status => cmd_status(&config, &dir),
-        Commands::Doctor => cmd_doctor(&config, &dir),
+        Commands::Doctor { json } => cmd_doctor(&config, &dir, json),
     }
 }
 
@@ -691,19 +695,28 @@ fn cmd_status(config: &Config, dir: &Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn cmd_doctor(config: &Config, dir: &Path) -> ExitCode {
+fn cmd_doctor(config: &Config, dir: &Path, json: bool) -> ExitCode {
     let checks = doctor::run(&RealHyprctl, &RealProcessInfo, config, dir);
-    let mut failed = false;
-    for check in &checks {
-        if check.status == doctor::Status::Fail {
-            failed = true;
+    let failed = checks
+        .iter()
+        .any(|check| check.status == doctor::Status::Fail);
+    if json {
+        match serde_json::to_string_pretty(&checks) {
+            Ok(output) => println!("{output}"),
+            Err(e) => {
+                eprintln!("hyprwake: could not serialize doctor checks: {e}");
+                return ExitCode::FAILURE;
+            }
         }
-        println!(
-            "[{}] {:<15} {}",
-            check.status.marker(),
-            check.name,
-            check.detail
-        );
+    } else {
+        for check in &checks {
+            println!(
+                "[{}] {:<15} {}",
+                check.status.marker(),
+                check.name,
+                check.detail
+            );
+        }
     }
     if failed {
         ExitCode::FAILURE
