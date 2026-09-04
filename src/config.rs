@@ -48,6 +48,15 @@ pub struct GeneralConfig {
     /// Interval between sweep polls.
     #[serde(default = "default_sweep_poll")]
     pub sweep_poll_ms: u64,
+    /// Refuse a save that keeps less than this fraction of the windows the
+    /// previous save held. 1.0 refuses any loss, 0.0 disables the guard.
+    #[serde(default = "default_drop_fraction")]
+    pub save_drop_fraction: f64,
+    /// The guard only applies this soon after the previous save. A desktop
+    /// genuinely emptied over minutes is a real change; one emptied seconds
+    /// after a full snapshot is a session being torn down.
+    #[serde(default = "default_drop_window_secs")]
+    pub save_drop_window_secs: i64,
     /// Restore aborts when more than this many windows are already open, so
     /// a stray invocation cannot duplicate a live desktop.
     #[serde(default = "default_abort_above")]
@@ -180,6 +189,12 @@ fn default_sweep_poll() -> u64 {
 }
 fn default_abort_above() -> usize {
     3
+}
+fn default_drop_fraction() -> f64 {
+    0.5
+}
+fn default_drop_window_secs() -> i64 {
+    45
 }
 
 fn default_ignore_classes() -> Vec<String> {
@@ -377,6 +392,8 @@ impl Default for GeneralConfig {
             spawn_stagger_ms: default_stagger(),
             sweep_timeout_secs: default_sweep_timeout(),
             sweep_poll_ms: default_sweep_poll(),
+            save_drop_fraction: default_drop_fraction(),
+            save_drop_window_secs: default_drop_window_secs(),
             abort_restore_above: default_abort_above(),
         }
     }

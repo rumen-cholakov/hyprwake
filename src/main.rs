@@ -145,7 +145,7 @@ fn cmd_save(
         return ExitCode::FAILURE;
     }
 
-    match perform_save(&name, dir, config, &RealHyprctl, &RealProcessInfo) {
+    match perform_save(&name, dir, config, &RealHyprctl, &RealProcessInfo, force) {
         Ok(SaveOutcome::Saved(count)) => {
             println!("Saved '{name}': {count} window(s)");
             if verbose {
@@ -169,6 +169,13 @@ fn cmd_save(
         }
         Ok(SaveOutcome::RefusedEmpty { kept }) => {
             println!("Nothing is open; kept the previous '{name}' ({kept} windows).");
+            ExitCode::SUCCESS
+        }
+        Ok(SaveOutcome::RefusedDrop { kept, captured }) => {
+            println!(
+                "Only {captured} of {kept} windows are left, moments after the last save; \
+                 kept the previous '{name}'. Use --force to record it anyway."
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {

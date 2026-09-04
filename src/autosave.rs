@@ -169,11 +169,14 @@ pub fn poll_daemon(name: &str, sessions_dir: &Path, config: &Config) -> ! {
 fn save_now(name: &str, sessions_dir: &Path, config: &Config) {
     let hyprctl = crate::hyprctl::RealHyprctl;
     let process = crate::process::RealProcessInfo;
-    match perform_save(name, sessions_dir, config, &hyprctl, &process) {
+    match perform_save(name, sessions_dir, config, &hyprctl, &process, false) {
         Ok(SaveOutcome::Saved(n)) => log(format!("autosave: {n} windows")),
         Ok(SaveOutcome::RefusedEmpty { kept }) => {
             log(format!("autosave: kept previous session ({kept} windows)"))
         }
+        Ok(SaveOutcome::RefusedDrop { kept, captured }) => log(format!(
+            "autosave: kept previous session ({kept} windows); only {captured} were left"
+        )),
         Err(e) => log(format!("autosave failed: {e}")),
     }
 }
@@ -183,11 +186,11 @@ pub fn run_once(sessions_dir: &Path, config: &Config) -> Result<(usize, usize), 
     let hyprctl = crate::hyprctl::RealHyprctl;
     let process = crate::process::RealProcessInfo;
     let name = autosave_name_now();
-    let outcome =
-        perform_save(&name, sessions_dir, config, &hyprctl, &process).map_err(|e| e.to_string())?;
+    let outcome = perform_save(&name, sessions_dir, config, &hyprctl, &process, false)
+        .map_err(|e| e.to_string())?;
     let saved = match outcome {
         SaveOutcome::Saved(n) => n,
-        SaveOutcome::RefusedEmpty { kept } => kept,
+        SaveOutcome::RefusedEmpty { kept } | SaveOutcome::RefusedDrop { kept, .. } => kept,
     };
     let pruned = rotate_autosaves(sessions_dir, config.general.autosave_retain)
         .map_err(|e| e.to_string())?;

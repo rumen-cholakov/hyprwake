@@ -112,6 +112,11 @@ hard way:
 - **An empty save never overwrites a populated session.** Logout and reboot
   close every window before the session ends; a periodic save landing in that
   gap would otherwise destroy the snapshot exactly when it is needed.
+- **Nor does a collapsing one.** Losing most of the windows seconds after a
+  full snapshot is a session being torn down, not rearranged — the same gap,
+  caught before it reaches zero. A desktop genuinely emptied over minutes is
+  a real change and is recorded. `--force` overrides, and
+  `save_drop_fraction = 0.0` turns it off.
 - **Restore refuses a populated desktop.** More than a few windows open means
   this is not a fresh login, and restoring would duplicate everything.
   `--force` overrides it.
