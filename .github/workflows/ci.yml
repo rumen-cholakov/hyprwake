@@ -34,6 +34,24 @@ jobs:
       - name: Release build
         run: cargo build --release
 
+  aarch64:
+    name: aarch64
+    # The Omarchy repository builds ARM packages, and its build runs the
+    # package's check(), so the suite has to pass on aarch64 too. A native
+    # ARM runner tests that for real rather than trusting that pure Rust is
+    # portable.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tests
+        run: cargo test
+
+      - name: Release build
+        run: cargo build --release
+
   arch:
     name: Arch build and package
     runs-on: ubuntu-latest
