@@ -258,8 +258,10 @@ around 200 packages across three channels (`edge` → `rc` → `stable`).
 Packages are defined in [omacom/omarchy-pkgs](https://github.com/omacom/omarchy-pkgs)
 under `pkgbuilds/<name>/`, each with a `PKGBUILD` and an `.omarchy/package.json`;
 `{"source": "local"}` means "build from this PKGBUILD" rather than mirroring
-the AUR. Submitting is a pull request there, and acceptance is the Omarchy
-team's call.
+the AUR. Its metadata also declares the project's `v<version>` Git tags and
+source tarballs, so OPR can detect a later release and prepare the checksum
+bump automatically. Submitting is a pull request there, and acceptance is the
+Omarchy team's call.
 
 To produce the submission directory for a tag:
 
