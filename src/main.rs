@@ -98,6 +98,8 @@ enum Commands {
     },
     /// Remove the desktop wiring
     Uninstall,
+    /// Show whether automatic session restoration is ready
+    Status,
     /// Check what would be saved and restored right now
     Doctor,
 }
@@ -137,6 +139,7 @@ fn main() -> ExitCode {
         } => cmd_autosave(now, install, uninstall, &config, &dir),
         Commands::Install { max_age } => cmd_install(&max_age),
         Commands::Uninstall => cmd_uninstall(),
+        Commands::Status => cmd_status(&config, &dir),
         Commands::Doctor => cmd_doctor(&config, &dir),
     }
 }
@@ -636,6 +639,56 @@ fn cmd_uninstall() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// A deliberately small health summary for everyday use. `doctor` remains the
+/// detailed diagnostic command, including checks that need a running
+/// compositor; status must still be useful from a terminal after login.
+fn cmd_status(config: &Config, dir: &Path) -> ExitCode {
+    let default = &config.general.default_session;
+    match load_session(default, dir) {
+        Ok(session) => println!(
+            "Session: {} — {} window(s), saved {}",
+            session.name,
+            session.clients.len(),
+            session
+                .created_at
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+        ),
+        Err(_) => println!("Session: none — run `hyprwake save`"),
+    }
+
+    let watcher_dir = service::systemd_user_dir();
+    let watcher = if !service::is_installed(&watcher_dir) {
+        "not installed"
+    } else if service::is_active() {
+        "running"
+    } else {
+        "installed, not running"
+    };
+    println!("Watcher: {watcher}");
+
+    if omarchy::is_omarchy() {
+        let hooks = omarchy::hooks_dir();
+        let hooks = if hooks.as_deref().is_some_and(omarchy::is_installed) {
+            "installed"
+        } else {
+            "not installed"
+        };
+        println!("Omarchy hooks: {hooks}");
+    }
+
+    let timer_dir = autosave::systemd_user_dir();
+    let timer = if !autosave::is_installed(&timer_dir) {
+        "not installed"
+    } else if autosave::is_active() {
+        "running"
+    } else {
+        "installed, not running"
+    };
+    println!("Autosave timer: {timer}");
+    ExitCode::SUCCESS
 }
 
 fn cmd_doctor(config: &Config, dir: &Path) -> ExitCode {

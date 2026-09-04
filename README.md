@@ -124,6 +124,7 @@ hyprwake daemon                 # save on a timer instead
 hyprwake autosave --install     # timestamped snapshots via a systemd timer
 hyprwake autosave --now         # snapshot and rotate
 
+hyprwake status                 # concise restore/watcher health summary
 hyprwake doctor                 # check the whole pipeline
 hyprwake config --init          # write a config seeded from this machine
 ```
