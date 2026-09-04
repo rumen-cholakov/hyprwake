@@ -88,7 +88,29 @@ fn event_socket_path() -> Option<PathBuf> {
 }
 
 /// Save whenever the layout settles. Runs until the compositor goes away.
-pub fn watch(name: &str, sessions_dir: &Path, config: &Config) -> std::io::Result<()> {
+///
+/// Holds the watcher lock for its lifetime, so starting a watcher when one is
+/// already running is refused rather than doubled up. `replace` stops the
+/// running one first, which is what an upgrade wants.
+pub fn watch(
+    name: &str,
+    sessions_dir: &Path,
+    config: &Config,
+    replace: bool,
+) -> std::io::Result<()> {
+    let _lock = crate::watchlock::acquire(
+        &crate::logging::state_dir(),
+        replace,
+        &crate::watchlock::is_live_hyprwake,
+    )
+    .map_err(|e| match e {
+        crate::watchlock::LockError::Io(e) => e,
+        // AddrInUse lets the caller tell "one is already running" -- which is
+        // success for anything making sure the watcher is up -- apart from a
+        // real failure to start.
+        other => std::io::Error::new(std::io::ErrorKind::AddrInUse, other.to_string()),
+    })?;
+
     let path = event_socket_path().ok_or_else(|| {
         std::io::Error::other("HYPRLAND_INSTANCE_SIGNATURE is not set; is Hyprland running?")
     })?;
@@ -96,6 +118,9 @@ pub fn watch(name: &str, sessions_dir: &Path, config: &Config) -> std::io::Resul
     // The read timeout is what lets a quiet socket still tick the debouncer.
     stream.set_read_timeout(Some(Duration::from_millis(500)))?;
     log(format!("watch: connected to {}", path.display()));
+    // Announced only once the lock is held and the socket is open, so the
+    // message is never a claim about a watcher that did not start.
+    println!("Watching for layout changes; saving '{name}' when things settle.");
 
     let mut debouncer = Debouncer::new(Duration::from_millis(config.general.debounce_ms));
     let mut reader = BufReader::new(stream);

@@ -68,7 +68,12 @@ enum Commands {
         force: bool,
     },
     /// Save whenever the window layout settles (event-driven)
-    Watch { name: Option<String> },
+    Watch {
+        name: Option<String>,
+        /// Stop a watcher that is already running and take over
+        #[arg(long)]
+        replace: bool,
+    },
     /// Save on a fixed interval
     Daemon { name: Option<String> },
     /// Timestamped snapshots on a systemd timer
@@ -109,7 +114,7 @@ fn main() -> ExitCode {
         Commands::List => cmd_list(&dir, cli.verbose),
         Commands::Delete { name } => cmd_delete(&name, &dir),
         Commands::Config { init, force } => cmd_config(init, force, &config),
-        Commands::Watch { name } => cmd_watch(name, &config, &dir),
+        Commands::Watch { name, replace } => cmd_watch(name, replace, &config, &dir),
         Commands::Daemon { name } => cmd_daemon(name, &config, &dir),
         Commands::Autosave {
             now,
@@ -420,11 +425,21 @@ fn seeded_config() -> String {
     out
 }
 
-fn cmd_watch(name: Option<String>, config: &Config, dir: &Path) -> ExitCode {
+fn cmd_watch(
+    name: Option<String>,
+    replace: bool,
+    config: &Config,
+    dir: &Path,
+) -> ExitCode {
     let name = session_name(name, config);
-    println!("Watching for layout changes; saving '{name}' when things settle.");
-    match autosave::watch(&name, dir, config) {
+    match autosave::watch(&name, dir, config, replace) {
         Ok(()) => ExitCode::SUCCESS,
+        // Already running is the desired state, not an error: this is what
+        // "make sure the watcher is up" looks like when it already is.
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            println!("hyprwake: {e}; nothing to do. Use --replace to take over.");
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             eprintln!("hyprwake: watch failed: {e}");
             eprintln!("hyprwake: `hyprwake daemon` polls instead and needs no event socket.");

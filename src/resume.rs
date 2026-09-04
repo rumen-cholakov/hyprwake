@@ -5,10 +5,18 @@
 //! session holds `/tmp/claude-<uid>/<project>/<session-id>/tasks`, and
 //! `claude --resume <session-id>` reopens that exact conversation.
 //!
-//! This is worth the trouble over a "continue the most recent one" flag,
-//! which collapses every session in a directory onto whichever was touched
-//! last — restoring three terminals would then reopen the same conversation
-//! three times.
+//! ```text
+//! /tmp/claude-1000/-home-rc-Work/b8a0afc7-.../tasks  ->  b8a0afc7-...
+//! ```
+//!
+//! Other programs keep their session index in a database instead, with no
+//! per-process trace at all. For those a rule can name a command that prints
+//! the session id for a working directory — codex records `cwd` against every
+//! thread it has run, so the right one can be looked up.
+//!
+//! Either way this beats a "continue the most recent one" flag, which
+//! collapses every session onto whichever was touched last — restoring three
+//! terminals would then reopen the same conversation three times.
 
 /// Match `path` against a pattern and capture the `{id}` it names.
 ///
@@ -18,6 +26,11 @@
 /// ```text
 /// /tmp/claude-*/*/{id}/*
 /// ```
+use std::io::Read;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
+
 pub fn extract_id(pattern: &str, path: &str) -> Option<String> {
     let pattern_segments: Vec<&str> = pattern.split('/').collect();
     let path_segments: Vec<&str> = path.split('/').collect();
@@ -59,6 +72,74 @@ pub fn find_id<'a>(pattern: &str, paths: impl IntoIterator<Item = &'a str>) -> O
 /// Substitute a captured id into a program's resume arguments.
 pub fn render_args(args: &[String], id: &str) -> Vec<String> {
     args.iter().map(|a| a.replace("{id}", id)).collect()
+}
+
+/// Accept an id only if it is a single harmless token.
+///
+/// The value ends up on a command line, and it comes from a filesystem path
+/// or the stdout of a helper command, so it is checked rather than trusted.
+pub fn sanitize_id(raw: &str) -> Option<String> {
+    let id = raw.lines().next()?.trim();
+    if id.is_empty() || id.len() > 128 {
+        return None;
+    }
+    let ok = id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'));
+    ok.then(|| id.to_string())
+}
+
+/// Fill `{cwd}`, `{cwd_sql}` and `{home}` into an id-command.
+///
+/// `{cwd_sql}` doubles single quotes so a directory name containing one
+/// cannot break out of a SQL string literal.
+pub fn render_command(command: &[String], cwd: &str, home: &str) -> Vec<String> {
+    command
+        .iter()
+        .map(|arg| {
+            arg.replace("{cwd_sql}", &cwd.replace('\'', "''"))
+                .replace("{cwd}", cwd)
+                .replace("{home}", home)
+        })
+        .collect()
+}
+
+/// Run an id-command and return what it printed.
+///
+/// Bounded by a timeout: this runs on every save, including from the
+/// watcher, and a helper that blocks must not stall the snapshot.
+pub fn run_id_command(command: &[String], timeout: Duration) -> Option<String> {
+    let (program, args) = command.split_first()?;
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+
+    // The pipe is read on another thread so a wedged helper can be killed
+    // instead of blocking the save.
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = stdout.read_to_string(&mut buf);
+        let _ = tx.send(buf);
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(output) => {
+            let _ = child.wait();
+            sanitize_id(&output)
+        }
+        Err(_) => {
+            crate::logging::log(format!("resume: id command timed out: {program}"));
+            let _ = child.kill();
+            let _ = child.wait();
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -132,6 +213,78 @@ mod tests {
     #[test]
     fn find_id_returns_nothing_when_no_file_matches() {
         assert_eq!(find_id(PATTERN, vec!["/dev/null"]), None);
+    }
+
+    #[test]
+    fn a_plausible_id_is_accepted() {
+        assert_eq!(
+            sanitize_id("01a02bbb-4956-78a1-bf64-5409e7269c76\n").as_deref(),
+            Some("01a02bbb-4956-78a1-bf64-5409e7269c76")
+        );
+    }
+
+    #[test]
+    fn a_dangerous_or_empty_id_is_refused() {
+        // The id reaches a command line; anything shell-ish is not an id.
+        assert_eq!(sanitize_id("id; rm -rf /"), None);
+        assert_eq!(sanitize_id("a b"), None);
+        assert_eq!(sanitize_id("$(whoami)"), None);
+        assert_eq!(sanitize_id(""), None);
+        assert_eq!(sanitize_id("   "), None);
+        assert_eq!(sanitize_id(&"x".repeat(200)), None);
+    }
+
+    #[test]
+    fn only_the_first_line_of_output_is_taken() {
+        assert_eq!(sanitize_id("abc\ndef").as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn command_placeholders_are_filled() {
+        let cmd = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "q {home} '{cwd_sql}' {cwd}".to_string(),
+        ];
+        assert_eq!(
+            render_command(&cmd, "/home/rc/Work", "/home/rc")[2],
+            "q /home/rc '/home/rc/Work' /home/rc/Work"
+        );
+    }
+
+    #[test]
+    fn a_quote_in_a_directory_cannot_escape_a_sql_literal() {
+        let cmd = vec!["q '{cwd_sql}'".to_string()];
+        assert_eq!(render_command(&cmd, "/home/rc/it's", "/home/rc")[0], "q '/home/rc/it''s'");
+    }
+
+    #[test]
+    fn an_id_command_returns_its_output() {
+        let cmd = vec!["printf".to_string(), "abc-123".to_string()];
+        assert_eq!(
+            run_id_command(&cmd, Duration::from_secs(5)).as_deref(),
+            Some("abc-123")
+        );
+    }
+
+    #[test]
+    fn an_id_command_that_prints_nothing_yields_nothing() {
+        let cmd = vec!["true".to_string()];
+        assert_eq!(run_id_command(&cmd, Duration::from_secs(5)), None);
+    }
+
+    #[test]
+    fn a_missing_id_command_is_not_an_error() {
+        let cmd = vec!["hyprwake-no-such-helper".to_string()];
+        assert_eq!(run_id_command(&cmd, Duration::from_secs(5)), None);
+    }
+
+    #[test]
+    fn a_wedged_id_command_is_killed() {
+        let cmd = vec!["sleep".to_string(), "30".to_string()];
+        let start = std::time::Instant::now();
+        assert_eq!(run_id_command(&cmd, Duration::from_millis(200)), None);
+        assert!(start.elapsed() < Duration::from_secs(5), "must not wait for the child");
     }
 
     #[test]

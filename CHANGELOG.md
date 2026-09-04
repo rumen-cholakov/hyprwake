@@ -31,8 +31,24 @@ and its [Omarchy fork](https://github.com/SotoAugusto/hypr-session-restore).
   recovered from the program's open files via `/proc/<pid>/fd`, so several
   sessions of one program in the same directory each come back as themselves
   rather than all resuming whichever was touched last.
-- Ships with a rule for Claude Code; other programs can be described in
-  `[tui.resume.<program>]`.
+- A second strategy for programs that expose nothing per-process: a rule may
+  name a command that prints the session id for a working directory. codex
+  records the `cwd` of every thread in its state database, so the session
+  belonging to a terminal can be looked up and resumed exactly rather than
+  falling back to "the most recent one anywhere".
+- Ships with rules for Claude Code and codex; other programs can be described
+  in `[tui.resume.<program>]`. Ids are validated before they reach a command
+  line, and lookups are bounded by a timeout so a save cannot stall.
+- t3code needs nothing: it is a GUI application that restores its own state
+  on relaunch, like a browser.
+
+### Development workflow
+
+- The watcher is now single-instance, guarded by a pid file; `--replace`
+  takes over from a running one.
+- `scripts/install-dev-hooks.sh` installs a post-commit hook that rebuilds,
+  reinstalls, refreshes the desktop wiring, restarts the watcher and
+  re-snapshots after any commit that touches the program.
 
 ### Session model
 

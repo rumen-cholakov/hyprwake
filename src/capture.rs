@@ -21,6 +21,9 @@ const VOLATILE_ARG_PREFIXES: &[&str] = &["--cwd-file", "--chooser-file", "--choo
 /// How deep to look inside a terminal for a shell or a TUI.
 const PROCESS_SEARCH_DEPTH: usize = 5;
 
+/// A session lookup runs on every save; it must not stall one.
+const ID_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 pub fn capture_session(
     name: &str,
     hyprctl: &dyn HyprctlClient,
@@ -118,11 +121,11 @@ pub fn relaunch_argv(
                 .into_iter()
                 .filter(|a| !VOLATILE_ARG_PREFIXES.iter().any(|p| a.starts_with(p)))
                 .collect();
-            argv = with_resume_args(argv, tui, process, config);
             let cwd = process
                 .cwd(tui)
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or(home);
+            argv = with_resume_args(argv, tui, &cwd, process, config);
             return Some(term.build_argv(&cwd, Some(&argv)));
         }
 
@@ -181,6 +184,7 @@ pub fn split_blob_cmdline(argv: Vec<String>) -> Vec<String> {
 fn with_resume_args(
     argv: Vec<String>,
     pid: i32,
+    cwd: &str,
     process: &dyn ProcessInfoProvider,
     config: &Config,
 ) -> Vec<String> {
@@ -191,8 +195,21 @@ fn with_resume_args(
         return argv;
     };
 
-    let open = process.open_files(pid);
-    let extra = match crate::resume::find_id(&rule.fd_glob, open.iter().map(|s| s.as_str())) {
+    // An id read from the program's own open files is exact; a lookup by
+    // working directory is the fallback for programs that expose nothing.
+    let from_fd = rule.fd_glob.as_ref().and_then(|glob| {
+        let open = process.open_files(pid);
+        crate::resume::find_id(glob, open.iter().map(|s| s.as_str()))
+    });
+    let id = from_fd.or_else(|| {
+        if rule.id_command.is_empty() {
+            return None;
+        }
+        let command = crate::resume::render_command(&rule.id_command, cwd, &home_dir());
+        crate::resume::run_id_command(&command, ID_COMMAND_TIMEOUT)
+    });
+
+    let extra = match id {
         Some(id) => crate::resume::render_args(&rule.args, &id),
         None => rule.fallback.clone(),
     };
@@ -390,6 +407,63 @@ mod tests {
             vec!["foot", "-D", "/home/rc", "claude", "--effort", "high", "--resume", "new-id"],
             "the stale id must be replaced, and unrelated flags kept"
         );
+    }
+
+    #[test]
+    fn a_lookup_based_resume_uses_the_terminals_directory() {
+        let mut cfg = config();
+        cfg.tui.resume.insert(
+            "myagent".to_string(),
+            crate::config::ResumeConfig {
+                fd_glob: None,
+                // Only prints an id when {cwd} arrived as the terminal's
+                // directory, so this proves the substitution too.
+                id_command: vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "[ '{cwd}' = /tmp/x ] && printf %s abc-123".to_string(),
+                ],
+                args: vec!["resume".to_string(), "{id}".to_string()],
+                fallback: vec!["resume".to_string(), "--last".to_string()],
+                strip_flags: vec![],
+            },
+        );
+        cfg.tui.programs.push("myagent".to_string());
+
+        let mut proc = MockProcessInfo::default();
+        proc.add(10, "foot", &["foot"], "/home/rc");
+        proc.add(11, "myagent", &["myagent"], "/tmp/x");
+        proc.link(10, 11);
+
+        let argv = relaunch_argv(&client("foot", 10), &proc, &cfg).unwrap();
+        assert_eq!(
+            argv,
+            vec!["foot", "-D", "/tmp/x", "myagent", "resume", "abc-123"]
+        );
+    }
+
+    #[test]
+    fn a_lookup_that_finds_nothing_falls_back() {
+        let mut cfg = config();
+        cfg.tui.resume.insert(
+            "myagent".to_string(),
+            crate::config::ResumeConfig {
+                fd_glob: None,
+                id_command: vec!["true".to_string()],
+                args: vec!["resume".to_string(), "{id}".to_string()],
+                fallback: vec!["resume".to_string(), "--last".to_string()],
+                strip_flags: vec![],
+            },
+        );
+        cfg.tui.programs.push("myagent".to_string());
+
+        let mut proc = MockProcessInfo::default();
+        proc.add(10, "foot", &["foot"], "/home/rc");
+        proc.add(11, "myagent", &["myagent"], "/tmp/x");
+        proc.link(10, 11);
+
+        let argv = relaunch_argv(&client("foot", 10), &proc, &cfg).unwrap();
+        assert_eq!(argv.last().unwrap(), "--last");
     }
 
     #[test]

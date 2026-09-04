@@ -101,11 +101,22 @@ pub struct TuiConfig {
 }
 
 /// How to recover a program's session and ask it to resume.
+///
+/// Two strategies, tried in order. `fd_glob` reads the id out of a path the
+/// running program holds open, which is exact. `id_command` runs a helper
+/// that prints the id for a working directory, for programs that keep their
+/// sessions in a database instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResumeConfig {
     /// Path pattern matched against the program's open files. One segment
     /// carries `{id}`; `*` matches within a segment.
-    pub fd_glob: String,
+    #[serde(default)]
+    pub fd_glob: Option<String>,
+    /// Command whose first line of output is the session id. `{cwd}`,
+    /// `{cwd_sql}` (single quotes doubled) and `{home}` are substituted.
+    /// It runs as you, at save time, with a short timeout.
+    #[serde(default)]
+    pub id_command: Vec<String>,
     /// Arguments appended when an id is recovered; `{id}` is substituted.
     pub args: Vec<String>,
     /// Arguments used when no id could be recovered.
@@ -299,7 +310,8 @@ fn default_resume_rules() -> HashMap<String, ResumeConfig> {
     rules.insert(
         "claude".to_string(),
         ResumeConfig {
-            fd_glob: "/tmp/claude-*/*/{id}/*".to_string(),
+            fd_glob: Some("/tmp/claude-*/*/{id}/*".to_string()),
+            id_command: vec![],
             args: vec!["--resume".to_string(), "{id}".to_string()],
             fallback: vec!["--continue".to_string()],
             strip_flags: vec![
@@ -307,6 +319,25 @@ fn default_resume_rules() -> HashMap<String, ResumeConfig> {
                 "--continue".to_string(),
                 "-c".to_string(),
             ],
+        },
+    );
+    // codex keeps no per-session file open; its state database records the
+    // working directory of every thread, so the session for this directory
+    // can be looked up. The database name carries a migration number, hence
+    // the glob for the newest one.
+    rules.insert(
+        "codex".to_string(),
+        ResumeConfig {
+            fd_glob: None,
+            id_command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "db=$(ls -t {home}/.codex/state_*.sqlite 2>/dev/null | head -1);                  [ -n \"$db\" ] || exit 0;                  sqlite3 \"file:$db?mode=ro\"                  \"SELECT id FROM threads WHERE cwd = '{cwd_sql}' AND archived = 0                  ORDER BY updated_at DESC LIMIT 1;\" 2>/dev/null"
+                    .to_string(),
+            ],
+            args: vec!["resume".to_string(), "{id}".to_string()],
+            fallback: vec!["resume".to_string(), "--last".to_string()],
+            strip_flags: vec!["resume".to_string(), "--last".to_string()],
         },
     );
     rules
@@ -578,6 +609,35 @@ cwd_flag = "-D"
             c.terminal_for("kitty").is_none(),
             "an explicit terminals table replaces the default one"
         );
+    }
+
+    #[test]
+    fn resume_rules_ship_for_the_agents_that_support_it() {
+        let c: Config = toml::from_str("").unwrap();
+        let claude = c.tui.resume.get("claude").expect("claude rule");
+        assert!(claude.fd_glob.is_some(), "claude's id comes from an open file");
+        assert!(claude.id_command.is_empty());
+
+        let codex = c.tui.resume.get("codex").expect("codex rule");
+        assert!(codex.fd_glob.is_none(), "codex exposes no per-session file");
+        assert!(!codex.id_command.is_empty(), "codex needs a lookup instead");
+        assert_eq!(codex.fallback, vec!["resume", "--last"]);
+    }
+
+    #[test]
+    fn a_resume_rule_can_be_defined_with_either_strategy() {
+        let c: Config = toml::from_str(
+            r#"
+[tui.resume.myagent]
+id_command = ["myagent", "current-session"]
+args = ["--session", "{id}"]
+"#,
+        )
+        .unwrap();
+        let rule = c.tui.resume.get("myagent").unwrap();
+        assert!(rule.fd_glob.is_none());
+        assert_eq!(rule.args, vec!["--session", "{id}"]);
+        assert!(rule.fallback.is_empty());
     }
 
     #[test]

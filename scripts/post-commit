@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# post-commit — keep the hyprwake running on this machine in step with the repo.
+#
+# Installed by scripts/install-dev-hooks.sh. After a commit that touches the
+# program it rebuilds, reinstalls, refreshes the desktop wiring and restarts
+# the watcher on the new binary, then records the result.
+#
+# The work happens detached: committing must not wait for a release build.
+
+set -euo pipefail
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/hyprwake"
+LOG="$STATE_DIR/dev-install.log"
+
+note() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG"; }
+
+notify() {
+    command -v notify-send >/dev/null 2>&1 || return 0
+    notify-send --app-name=hyprwake "$1" "${2:-}" ${3:+--urgency="$3"} || true
+}
+
+# ── parent: decide whether to act, then detach ──────────────────────────────
+if [[ "${HYPRWAKE_DEV_HOOK_CHILD:-}" != 1 ]]; then
+    repo=$(git rev-parse --show-toplevel)
+
+    # Documentation-only commits change nothing that runs.
+    if ! git diff-tree --no-commit-id --name-only -r HEAD \
+        | grep -qE '^(src/|scripts/|Cargo\.(toml|lock)$)'; then
+        exit 0
+    fi
+
+    mkdir -p "$STATE_DIR"
+    echo "hyprwake: rebuilding and reinstalling in the background (log: $LOG)"
+
+    # Drop git's environment: it would point cargo's own git calls at this
+    # repository's index and confuse them.
+    env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE -u GIT_PREFIX \
+        HYPRWAKE_DEV_HOOK_CHILD=1 HYPRWAKE_DEV_HOOK_REPO="$repo" \
+        setsid "$0" >/dev/null 2>&1 &
+    exit 0
+fi
+
+# ── child: build, install, wire up, restart ─────────────────────────────────
+cd "$HYPRWAKE_DEV_HOOK_REPO"
+commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+note "=== post-commit $commit ==="
+
+if ! cargo install --path . --quiet >>"$LOG" 2>&1; then
+    note "build FAILED; the previously installed binary is still in place"
+    notify "hyprwake: build failed" "$commit — see $LOG" critical
+    exit 1
+fi
+installed=$(command -v hyprwake || echo hyprwake)
+note "installed $installed ($("$installed" --version 2>/dev/null))"
+
+# Rewrite the desktop hooks so they point at the binary just installed.
+if hyprwake install >>"$LOG" 2>&1; then
+    note "desktop hooks refreshed"
+fi
+
+# Restart the watcher on the new binary. Only meaningful inside a running
+# Hyprland session -- a commit made over SSH has no compositor to watch.
+if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+    setsid hyprwake watch --replace >/dev/null 2>&1 &
+    sleep 1
+    if pgrep -x hyprwake >/dev/null 2>&1; then
+        note "watcher restarted"
+    else
+        note "watcher did NOT come up"
+    fi
+    # Refresh the stored session with whatever the new build can capture.
+    hyprwake save >>"$LOG" 2>&1 || note "save failed"
+else
+    note "no compositor in this environment; watcher not started"
+fi
+
+hyprwake doctor >>"$LOG" 2>&1 || true
+failures=$(hyprwake doctor 2>/dev/null | grep -c '^\[FAIL\]' || true)
+if [[ "$failures" -gt 0 ]]; then
+    notify "hyprwake: $commit installed, $failures check(s) failing" "see $LOG" critical
+else
+    notify "hyprwake: $commit installed and running"
+fi
+note "done"

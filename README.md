@@ -23,7 +23,7 @@ hyprwake doctor               # what would happen if you did
 | Workspaces | including named workspaces and scratchpads (`special:*`) |
 | Terminals | reopened in the shell's working directory |
 | TUIs | `nvim`, `yazi`, `btop`, `lazygit`… relaunched inside the terminal, in their own directory |
-| Sessions | a program that can reopen its own session is asked to — Claude Code comes back on the same conversation, not a blank one |
+| Sessions | a program that can reopen its own session is asked to — Claude Code and codex come back on the same conversation, not a blank one |
 | Floating windows | pixel-exact position and size |
 | Window state | pinned, fullscreen, maximized |
 | Browser profiles | one window per Chromium/Chrome/Brave profile, each on its own workspace |
@@ -81,6 +81,7 @@ hyprwake list -v                # saved sessions, and what is in them
 hyprwake delete NAME
 
 hyprwake watch                  # save when the layout settles (event-driven)
+hyprwake watch --replace        # take over from a watcher already running
 hyprwake daemon                 # save on a timer instead
 hyprwake autosave --install     # timestamped snapshots via a systemd timer
 hyprwake autosave --now         # snapshot and rotate
@@ -132,14 +133,26 @@ extra_args = []              # e.g. an --app-id that pins the window class
 [tui]
 programs = ["nvim", "yazi", "btop"]   # relaunched inside their terminal
 
-# Programs that can reopen a specific session. The id is recovered from the
-# program's own open files, so several sessions in one directory each come
-# back as themselves. This rule ships by default.
+# Programs that can reopen a specific session. Two strategies, tried in
+# order; both rules below ship by default.
+#
+# fd_glob reads the id out of a path the running program holds open — exact,
+# so several sessions in one directory each come back as themselves.
 [tui.resume.claude]
 fd_glob = "/tmp/claude-*/*/{id}/*"    # one segment carries {id}
 args = ["--resume", "{id}"]
 fallback = ["--continue"]             # when no id could be recovered
 strip_flags = ["--resume", "-c", "--continue"]
+
+# id_command suits programs that keep sessions in a database and expose
+# nothing per-process. It runs as you, at save time, with a 3s timeout;
+# {cwd}, {cwd_sql} (quotes doubled) and {home} are substituted, and the id
+# is validated before it reaches a command line.
+[tui.resume.codex]
+id_command = ["sh", "-c", "... SELECT id FROM threads WHERE cwd = '{cwd_sql}' ..."]
+args = ["resume", "{id}"]
+fallback = ["resume", "--last"]
+strip_flags = ["resume", "--last"]
 
 [apps.Spotify]
 no_spawn = true              # record the window, never launch it
@@ -169,13 +182,30 @@ profile_workspaces = { "Default" = "2", "Work" = "6" }
 ## Development
 
 ```sh
-cargo test        # 147 tests, no compositor required
+cargo test        # 160 tests, no compositor required
 cargo clippy --all-targets
 ```
 
 The compositor and `/proc` both sit behind traits with test doubles, so
 capture, restore, matching and the sweep are all exercised without a running
 Hyprland.
+
+### Keeping the installed copy current
+
+```sh
+scripts/install-dev-hooks.sh
+```
+
+After any commit touching `src/`, `scripts/` or `Cargo.*`, a post-commit hook
+rebuilds, reinstalls, refreshes the desktop hooks so they point at the new
+binary, restarts the watcher on it and takes a fresh snapshot — detached, so
+the commit itself returns immediately. It reports through a desktop
+notification and logs to `~/.local/state/hyprwake/dev-install.log`. A failed
+build leaves the previously installed binary alone.
+
+The watcher is single-instance: a second `hyprwake watch` refuses to start,
+and `--replace` takes over from the running one, so "make sure it is running"
+is safe to say twice.
 
 ## Credits
 
