@@ -2,31 +2,59 @@ name: CI
 
 on:
   push:
-    branches: [main, "feat/**"]
-  pull_request:
     branches: [main]
+  pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   test:
-    name: Test & Lint
+    name: Test and lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-
       - uses: Swatinem/rust-cache@v2
 
-      - name: Check formatting
-        run: cargo fmt -- --check
+      - name: Formatting
+        run: cargo fmt --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings -A clippy::too_many_arguments -A deprecated
+        run: cargo clippy --all-targets -- -D warnings
 
-      - name: Unit tests
-        run: cargo test --lib
+      # Plain `cargo test` so the CLI integration tests and doctests run too,
+      # not just the library.
+      - name: Tests
+        run: cargo test
+
+      - name: Release build
+        run: cargo build --release
+
+  arch:
+    name: Arch build and package
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install toolchain
+        run: |
+          pacman -Syu --noconfirm --needed base-devel rust git namcap
+
+      - uses: actions/checkout@v5
+
+      # The tool targets Arch, so it is worth compiling and testing against
+      # Arch's Rust rather than only the toolchain on the Ubuntu runner.
+      - name: Tests on Arch
+        run: cargo test
+
+      # makepkg refuses to run as root, and the container has no other user.
+      - name: Validate PKGBUILD
+        run: |
+          useradd -m builder
+          chown -R builder:builder .
+          su builder -c 'makepkg --printsrcinfo' > .SRCINFO
+          cat .SRCINFO
+          namcap PKGBUILD

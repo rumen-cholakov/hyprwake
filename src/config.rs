@@ -615,7 +615,10 @@ cwd_flag = "-D"
     fn resume_rules_ship_for_the_agents_that_support_it() {
         let c: Config = toml::from_str("").unwrap();
         let claude = c.tui.resume.get("claude").expect("claude rule");
-        assert!(claude.fd_glob.is_some(), "claude's id comes from an open file");
+        assert!(
+            claude.fd_glob.is_some(),
+            "claude's id comes from an open file"
+        );
         assert!(claude.id_command.is_empty());
 
         let codex = c.tui.resume.get("codex").expect("codex rule");

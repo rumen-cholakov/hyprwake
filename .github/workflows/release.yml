@@ -1,101 +1,113 @@
 name: Release
 
-# Triggered by pushing a version tag (e.g., v0.2.0)
+# Cut a release by pushing a version tag: git tag v0.1.0 && git push --tags
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build
+        required: true
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: Build & Release
+  release:
+    name: Build and publish
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
 
-      - name: Unit tests
-        run: cargo test --lib
+      - name: Tests
+        run: cargo test
 
-      - name: Build release binary
+      - name: Build
         run: cargo build --release
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: target/release/hyprflow
-
-  # Publishes the updated PKGBUILD to AUR.
-  # Required secret: AUR_SSH_PRIVATE_KEY
-  #   - Generate: ssh-keygen -t ed25519 -C "hyprflow-aur" -f aur_key
-  #   - Add public key to your AUR account: https://aur.archlinux.org/account
-  #   - Add private key as repository secret AUR_SSH_PRIVATE_KEY
-  aur-publish:
-    name: Publish to AUR
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Download source tarball and compute checksum
-        id: checksum
+      - name: Assemble the binary archive
+        id: archive
         run: |
-          curl -sL "https://github.com/iSorensen/hyprflow/archive/${GITHUB_REF_NAME}.tar.gz" \
-            -o source.tar.gz
+          tag="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          version="${tag#v}"
+          stage="hyprwake-${version}-x86_64-linux"
+          mkdir -p "$stage"
+          install -m755 target/release/hyprwake "$stage/"
+          install -m644 README.md LICENSE CHANGELOG.md "$stage/"
+          strip "$stage/hyprwake" || true
+          tar czf "${stage}.tar.gz" "$stage"
+          sha256sum "${stage}.tar.gz" > "${stage}.tar.gz.sha256"
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "archive=${stage}.tar.gz"
+          } >> "$GITHUB_OUTPUT"
+
+      # The Omarchy Package Repository builds from the GitHub source tarball,
+      # so its checksum is what a package submission needs. Producing it here
+      # means the PKGBUILD never has to be checksummed by hand.
+      - name: Prepare the OPR package files
+        id: opr
+        run: |
+          tag="${{ steps.archive.outputs.tag }}"
+          version="${{ steps.archive.outputs.version }}"
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${tag}.tar.gz"
+          curl -fsSL "$url" -o source.tar.gz
           sha256=$(sha256sum source.tar.gz | cut -d' ' -f1)
+
+          mkdir -p opr/hyprwake/.omarchy
+          sed -e "s/^pkgver=.*/pkgver=${version}/" \
+              -e "s/^pkgrel=.*/pkgrel=1/" \
+              -e "s/^sha256sums=.*/sha256sums=('${sha256}')/" \
+              PKGBUILD > opr/hyprwake/PKGBUILD
+          cp packaging/opr/package.json opr/hyprwake/.omarchy/package.json
+          tar czf opr-hyprwake-${version}.tar.gz -C opr hyprwake
+
           echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
+          echo "archive=opr-hyprwake-${version}.tar.gz" >> "$GITHUB_OUTPUT"
 
-      - name: Configure SSH for AUR
+      - name: Release notes
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/aur_key
-          chmod 600 ~/.ssh/aur_key
-          echo "aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN" \
-            >> ~/.ssh/known_hosts
-          printf '%s\n' "Host aur.archlinux.org" "  IdentityFile ~/.ssh/aur_key" "  User aur" \
-            >> ~/.ssh/config
+          cat > notes.md <<EOF
+          ## Install
 
-      - name: Clone AUR repo
-        run: git clone ssh://aur@aur.archlinux.org/hyprflow.git aur-repo
+          \`\`\`sh
+          cargo install --git https://github.com/${GITHUB_REPOSITORY} --tag ${{ steps.archive.outputs.tag }}
+          \`\`\`
 
-      - name: Update PKGBUILD
-        working-directory: aur-repo
-        run: |
-          sed -i "s/^pkgver=.*/pkgver=${{ steps.version.outputs.version }}/" PKGBUILD
-          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
-          sed -i "s/^sha256sums=.*/sha256sums=('${{ steps.checksum.outputs.sha256 }}')/" PKGBUILD
+          Or take the prebuilt \`${{ steps.archive.outputs.archive }}\` below and put
+          \`hyprwake\` on your PATH. Then:
 
-      - name: Generate .SRCINFO
-        working-directory: aur-repo
-        run: |
-          docker run --rm -v "$PWD":/pkg -w /pkg archlinux:latest bash -c "
-            pacman -Sy --noconfirm base-devel &&
-            useradd -m builder &&
-            chown -R builder:builder /pkg &&
-            su builder -c 'makepkg --printsrcinfo > .SRCINFO'
-          "
+          \`\`\`sh
+          hyprwake install   # wire it into the desktop
+          hyprwake save      # give it something to restore
+          \`\`\`
 
-      - name: Fix ownership after docker
-        working-directory: aur-repo
-        run: sudo chown -R "$(id -u):$(id -g)" .
+          ## Packaging
 
-      - name: Commit and push to AUR
-        working-directory: aur-repo
-        run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          git add PKGBUILD .SRCINFO
-          git commit -m "Update to ${{ steps.version.outputs.version }}"
-          git push
+          Source tarball SHA-256, for a PKGBUILD:
+
+          \`\`\`
+          ${{ steps.opr.outputs.sha256 }}
+          \`\`\`
+
+          \`${{ steps.opr.outputs.archive }}\` contains the package directory ready
+          to drop into a pull request against
+          [omacom/omarchy-pkgs](https://github.com/omacom/omarchy-pkgs) under
+          \`pkgbuilds/\`.
+          EOF
+          cat notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: notes.md
+          generate_release_notes: true
+          files: |
+            ${{ steps.archive.outputs.archive }}
+            ${{ steps.archive.outputs.archive }}.sha256
+            ${{ steps.opr.outputs.archive }}

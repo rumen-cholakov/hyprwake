@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# pre-commit — refuse a commit that CI would reject anyway.
+#
+# Only the two fast checks live here; the test suite and the release build
+# run after the commit, in scripts/post-commit.
+
+set -euo pipefail
+
+# Nothing Rust staged, nothing to check.
+if ! git diff --cached --name-only --diff-filter=ACM | grep -qE '\.rs$|^Cargo\.(toml|lock)$'; then
+    exit 0
+fi
+
+if ! cargo fmt --check >/dev/null 2>&1; then
+    echo "pre-commit: formatting differs from rustfmt. Run:" >&2
+    echo "    cargo fmt" >&2
+    echo "(skip with --no-verify)" >&2
+    exit 1
+fi
+
+if ! cargo clippy --all-targets -- -D warnings >/dev/null 2>&1; then
+    echo "pre-commit: clippy found problems. Run:" >&2
+    echo "    cargo clippy --all-targets -- -D warnings" >&2
+    echo "(skip with --no-verify)" >&2
+    exit 1
+fi

@@ -44,7 +44,11 @@ impl Drop for WatchLock {
 /// A stale pid file — from a watcher that was killed, or whose pid has since
 /// been reused by something else — is taken over rather than treated as a
 /// live instance.
-pub fn acquire(state_dir: &Path, replace: bool, is_live: &dyn Fn(i32) -> bool) -> Result<WatchLock, LockError> {
+pub fn acquire(
+    state_dir: &Path,
+    replace: bool,
+    is_live: &dyn Fn(i32) -> bool,
+) -> Result<WatchLock, LockError> {
     std::fs::create_dir_all(state_dir).map_err(LockError::Io)?;
     let path = lock_path(state_dir);
 
@@ -98,7 +102,10 @@ mod tests {
         let lock = acquire(dir.path(), false, &nothing_is_live).unwrap();
         assert!(lock_path(dir.path()).exists());
         drop(lock);
-        assert!(!lock_path(dir.path()).exists(), "the lock is released on exit");
+        assert!(
+            !lock_path(dir.path()).exists(),
+            "the lock is released on exit"
+        );
     }
 
     #[test]

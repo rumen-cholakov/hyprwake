@@ -42,13 +42,28 @@ and its [Omarchy fork](https://github.com/SotoAugusto/hypr-session-restore).
 - t3code needs nothing: it is a GUI application that restores its own state
   on relaunch, like a browser.
 
+### Packaging and CI
+
+- CI runs formatting, clippy with warnings denied, the full test suite
+  (including the CLI integration tests, which the inherited workflow skipped)
+  and a release build; a second job compiles and tests on Arch itself and
+  validates the PKGBUILD with `makepkg --printsrcinfo` and `namcap`.
+- The release workflow publishes a binary archive with checksums and a
+  ready-to-submit Omarchy Package Repository directory, with the source
+  checksum computed for it. The inherited AUR publishing job is gone.
+- `PKGBUILD` builds for x86_64 and aarch64, runs the test suite as its
+  `check()`, and declares sqlite and uwsm as optional dependencies for codex
+  resume and scoped launching.
+- `scripts/opr-bundle.sh` produces the same submission directory by hand.
+
 ### Development workflow
 
 - The watcher is now single-instance, guarded by a pid file; `--replace`
   takes over from a running one.
-- `scripts/install-dev-hooks.sh` installs a post-commit hook that rebuilds,
-  reinstalls, refreshes the desktop wiring, restarts the watcher and
-  re-snapshots after any commit that touches the program.
+- `scripts/install-dev-hooks.sh` installs a pre-commit hook running the two
+  fast checks CI runs first (rustfmt, clippy) and a post-commit hook that
+  rebuilds, reinstalls, refreshes the desktop wiring, restarts the watcher
+  and re-snapshots after any commit that touches the program.
 
 ### Session model
 

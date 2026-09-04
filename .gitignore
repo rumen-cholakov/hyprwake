@@ -7,3 +7,10 @@
 *.key
 credentials.json
 *secret*.json
+
+# makepkg artifacts. Note: makepkg also uses ./src, which is this project's
+# source directory -- build packages elsewhere (or set BUILDDIR) rather than
+# ignoring it here.
+.SRCINFO
+*.pkg.tar.zst
+/pkg/

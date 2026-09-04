@@ -168,8 +168,7 @@ pub fn split_blob_cmdline(argv: Vec<String>) -> Vec<String> {
     if rest.is_empty() {
         return argv;
     }
-    let looks_executable =
-        std::path::Path::new(first).is_file() || which::which(first).is_ok();
+    let looks_executable = std::path::Path::new(first).is_file() || which::which(first).is_ok();
     if !looks_executable {
         return argv;
     }
@@ -398,7 +397,12 @@ mod tests {
     fn a_session_already_started_with_a_resume_flag_is_not_resumed_twice() {
         let mut proc = MockProcessInfo::default();
         proc.add(10, "foot", &["foot"], "/home/rc");
-        proc.add(11, "claude", &["claude", "--resume", "old-id", "--effort", "high"], "/home/rc");
+        proc.add(
+            11,
+            "claude",
+            &["claude", "--resume", "old-id", "--effort", "high"],
+            "/home/rc",
+        );
         proc.link(10, 11);
         proc.open(11, &["/tmp/claude-1000/-home-rc/new-id/tasks"]);
         let argv = relaunch_argv(&client("foot", 10), &proc, &config()).unwrap();

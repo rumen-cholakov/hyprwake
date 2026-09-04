@@ -425,12 +425,7 @@ fn seeded_config() -> String {
     out
 }
 
-fn cmd_watch(
-    name: Option<String>,
-    replace: bool,
-    config: &Config,
-    dir: &Path,
-) -> ExitCode {
+fn cmd_watch(name: Option<String>, replace: bool, config: &Config, dir: &Path) -> ExitCode {
     let name = session_name(name, config);
     match autosave::watch(&name, dir, config, replace) {
         Ok(()) => ExitCode::SUCCESS,

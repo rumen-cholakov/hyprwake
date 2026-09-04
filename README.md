@@ -49,7 +49,14 @@ nothing, while an idle desktop writes nothing at all.
 ## Install
 
 ```sh
-cargo install --path .        # or: makepkg -si
+cargo install --git https://github.com/rumen-cholakov/hyprwake
+```
+
+Or take the binary from a [release](https://github.com/rumen-cholakov/hyprwake/releases)
+and put it on your PATH, or build a package from the `PKGBUILD` in this repo:
+
+```sh
+makepkg -si
 ```
 
 Then wire it into the desktop:
@@ -206,6 +213,28 @@ build leaves the previously installed binary alone.
 The watcher is single-instance: a second `hyprwake watch` refuses to start,
 and `--replace` takes over from the running one, so "make sure it is running"
 is safe to say twice.
+
+## Packaging
+
+Releases are cut by pushing a version tag. CI runs the suite, builds, publishes
+a GitHub release with the binary and its checksum, and attaches a package
+directory with the version and source checksum already filled in.
+
+Arch users are served by the `PKGBUILD` here. For Omarchy there is the
+**Omarchy Package Repository** — the `[omarchy]` pacman repo at
+`pkgs.omarchy.org` that every Omarchy machine already has enabled, carrying
+around 200 packages across three channels (`edge` → `rc` → `stable`).
+Packages are defined in [omacom/omarchy-pkgs](https://github.com/omacom/omarchy-pkgs)
+under `pkgbuilds/<name>/`, each with a `PKGBUILD` and an `.omarchy/package.json`;
+`{"source": "local"}` means "build from this PKGBUILD" rather than mirroring
+the AUR. Submitting is a pull request there, and acceptance is the Omarchy
+team's call.
+
+To produce the submission directory for a tag:
+
+```sh
+scripts/opr-bundle.sh v0.1.0
+```
 
 ## Credits
 

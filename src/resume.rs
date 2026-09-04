@@ -147,8 +147,7 @@ mod tests {
     use super::*;
 
     const PATTERN: &str = "/tmp/claude-*/*/{id}/*";
-    const REAL: &str =
-        "/tmp/claude-1000/-home-rc-Work/b8a0afc7-1374-4bad-957b-2d5eef6f50a1/tasks";
+    const REAL: &str = "/tmp/claude-1000/-home-rc-Work/b8a0afc7-1374-4bad-957b-2d5eef6f50a1/tasks";
 
     #[test]
     fn captures_the_session_id_from_a_real_path() {
@@ -182,10 +181,7 @@ mod tests {
     #[test]
     fn an_unrelated_path_never_matches() {
         assert_eq!(extract_id(PATTERN, "/proc/3986/statm"), None);
-        assert_eq!(
-            extract_id(PATTERN, "/tmp/other-1000/proj/id/tasks"),
-            None
-        );
+        assert_eq!(extract_id(PATTERN, "/tmp/other-1000/proj/id/tasks"), None);
     }
 
     #[test]
@@ -255,7 +251,10 @@ mod tests {
     #[test]
     fn a_quote_in_a_directory_cannot_escape_a_sql_literal() {
         let cmd = vec!["q '{cwd_sql}'".to_string()];
-        assert_eq!(render_command(&cmd, "/home/rc/it's", "/home/rc")[0], "q '/home/rc/it''s'");
+        assert_eq!(
+            render_command(&cmd, "/home/rc/it's", "/home/rc")[0],
+            "q '/home/rc/it''s'"
+        );
     }
 
     #[test]
@@ -284,7 +283,10 @@ mod tests {
         let cmd = vec!["sleep".to_string(), "30".to_string()];
         let start = std::time::Instant::now();
         assert_eq!(run_id_command(&cmd, Duration::from_millis(200)), None);
-        assert!(start.elapsed() < Duration::from_secs(5), "must not wait for the child");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "must not wait for the child"
+        );
     }
 
     #[test]
