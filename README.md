@@ -145,6 +145,15 @@ hard way:
 - **Everything is logged** to `~/.local/state/hyprwake/hyprwake.log`, because
   a restore that runs from a boot hook has nowhere else to complain.
 
+## Privacy
+
+Snapshots in `~/.local/share/hyprwake/sessions/` record window titles,
+application command lines, working directories, workspace names, and browser
+profile names so they can be restored. The log lives in
+`~/.local/state/hyprwake/`. Treat both directories as private desktop state:
+do not share a snapshot or log without reviewing it, and avoid placing secrets
+in command-line arguments.
+
 ## Configuration
 
 Optional; `~/.config/hyprwake/config.toml`. `hyprwake config --init` writes one
