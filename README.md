@@ -5,8 +5,8 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Reopen your Hyprland session after a reboot: the same windows, on the same
-workspaces, with each terminal back in the directory it was in and running
-whatever it was running.
+workspaces, with each terminal back in the directory it was in and supported
+TUIs resumed where they can be.
 
 macOS calls this "reopen windows when logging back in". It is not a memory
 image — those are bound to the kernel that wrote them and die at the next
@@ -233,7 +233,7 @@ profile_workspaces = { "default" = "2", "work" = "6" }
 ## Development
 
 ```sh
-cargo test        # 160 tests, no compositor required
+cargo test        # 201 tests, no compositor required
 cargo clippy --all-targets
 ```
 
@@ -280,7 +280,7 @@ Omarchy team's call.
 To produce the submission directory for a tag:
 
 ```sh
-scripts/opr-bundle.sh v0.1.0
+scripts/opr-bundle.sh v0.1.2
 ```
 
 ## Credits
