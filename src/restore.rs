@@ -17,7 +17,7 @@ use crate::logging::log;
 use crate::lua::{lua_long_str, lua_str, shell_join};
 use crate::session::{BrowserProfile, Session, SessionClient};
 use crate::workspace::WorkspaceRef;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -43,6 +43,7 @@ pub struct RestoreReport {
     pub placed: usize,
     pub failed: usize,
     pub unmatched: usize,
+    pub monitors_placed: usize,
     pub details: Vec<String>,
 }
 
@@ -123,10 +124,12 @@ pub fn restore_session(
     }
 
     if opts.dry_run {
+        restore_workspace_monitors(session, hyprctl, opts, &mut report);
         return Ok(report);
     }
 
     sweep(session, hyprctl, config, opts, initial, &mut report)?;
+    restore_workspace_monitors(session, hyprctl, opts, &mut report);
     log(format!(
         "restore done: spawned={} placed={} failed={} unmatched={}",
         report.spawned, report.placed, report.failed, report.unmatched
@@ -273,6 +276,96 @@ fn needs_placement(saved: &SessionClient, window: &crate::hyprctl::HyprClient) -
     let geometry_off =
         saved.floating && (!window.floating || window.at != saved.at || window.size != saved.size);
     misplaced || geometry_off || saved.fullscreen > 0 || saved.pinned
+}
+
+/// Which monitor each workspace belonged to, decided by majority of the
+/// windows saved on it.
+///
+/// A workspace lives on one monitor, but a session can disagree with itself
+/// if a window moved while the snapshot was being taken, so the common answer
+/// wins. Special workspaces are excluded: they are overlays on whichever
+/// monitor summons them, not residents of one.
+pub fn workspace_monitors(session: &Session) -> BTreeMap<String, String> {
+    let mut votes: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+    for client in &session.clients {
+        if client.workspace.is_special() || client.monitor.is_empty() {
+            continue;
+        }
+        *votes
+            .entry(client.workspace.selector())
+            .or_default()
+            .entry(client.monitor.clone())
+            .or_default() += 1;
+    }
+    votes
+        .into_iter()
+        .filter_map(|(workspace, counts)| {
+            counts
+                .into_iter()
+                // Ties break on the monitor name so the result is stable.
+                .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
+                .map(|(monitor, _)| (workspace, monitor))
+        })
+        .collect()
+}
+
+/// Send each workspace back to the monitor it was on.
+///
+/// Runs after the windows exist: Hyprland has no workspace to move until
+/// something is on it. Monitors that are no longer attached are skipped --
+/// a session saved on a docked laptop must still restore on the road.
+fn restore_workspace_monitors(
+    session: &Session,
+    hyprctl: &dyn HyprctlClient,
+    opts: &RestoreOptions,
+    report: &mut RestoreReport,
+) {
+    let wanted = workspace_monitors(session);
+    if wanted.is_empty() {
+        return;
+    }
+    let attached: HashSet<String> = match hyprctl.get_monitors() {
+        Ok(monitors) => monitors.into_iter().map(|m| m.name).collect(),
+        Err(e) => {
+            log(format!("monitors: query failed: {e}"));
+            return;
+        }
+    };
+
+    for (workspace, monitor) in wanted {
+        if !attached.contains(&monitor) {
+            let msg = format!("monitor {monitor} is not attached; leaving workspace {workspace}");
+            log(msg.clone());
+            if opts.verbose {
+                report.details.push(msg);
+            }
+            continue;
+        }
+        let call = workspace_move_call(&workspace, &monitor);
+        if opts.dry_run {
+            report.details.push(format!("  hyprctl dispatch {call}"));
+            continue;
+        }
+        match hyprctl.dispatch(&call) {
+            Ok(()) => {
+                report.monitors_placed += 1;
+                if opts.verbose {
+                    report
+                        .details
+                        .push(format!("workspace {workspace} → {monitor}"));
+                }
+            }
+            Err(e) => log(format!("workspace {workspace} → {monitor} failed: {e}")),
+        }
+    }
+}
+
+pub fn workspace_move_call(workspace: &str, monitor: &str) -> String {
+    format!(
+        "hl.dsp.workspace.move({{ workspace = {}, monitor = {} }})",
+        lua_str(workspace),
+        lua_str(monitor)
+    )
 }
 
 // ── Call builders (pure, unit-tested) ──────────────────────────────────────
@@ -587,6 +680,91 @@ mod tests {
 
     // ── end to end against the mock compositor ──
 
+    // ── multi-monitor ──
+
+    fn on_monitor(class: &str, ws: (i32, &str), monitor: &str) -> SessionClient {
+        let mut c = saved(class, ws);
+        c.monitor = monitor.to_string();
+        c
+    }
+
+    #[test]
+    fn each_workspace_maps_to_its_monitor() {
+        let session = session_of(vec![
+            on_monitor("foot", (1, "1"), "eDP-1"),
+            on_monitor("code", (2, "2"), "DP-1"),
+            on_monitor("chrome", (2, "2"), "DP-1"),
+        ]);
+        let map = workspace_monitors(&session);
+        assert_eq!(map.get("1").unwrap(), "eDP-1");
+        assert_eq!(map.get("2").unwrap(), "DP-1");
+    }
+
+    #[test]
+    fn a_disagreeing_workspace_takes_the_majority_monitor() {
+        // A window can move mid-snapshot; the common answer should win.
+        let session = session_of(vec![
+            on_monitor("a", (3, "3"), "DP-1"),
+            on_monitor("b", (3, "3"), "DP-1"),
+            on_monitor("c", (3, "3"), "eDP-1"),
+        ]);
+        assert_eq!(workspace_monitors(&session).get("3").unwrap(), "DP-1");
+    }
+
+    #[test]
+    fn special_workspaces_are_not_bound_to_a_monitor() {
+        // A scratchpad appears on whichever monitor summons it.
+        let session = session_of(vec![on_monitor("foot", (-99, "special:magic"), "DP-1")]);
+        assert!(workspace_monitors(&session).is_empty());
+    }
+
+    #[test]
+    fn workspaces_without_a_recorded_monitor_are_skipped() {
+        let session = session_of(vec![on_monitor("foot", (1, "1"), "")]);
+        assert!(workspace_monitors(&session).is_empty());
+    }
+
+    #[test]
+    fn the_workspace_move_call_targets_both_by_name() {
+        assert_eq!(
+            workspace_move_call("2", "DP-1"),
+            "hl.dsp.workspace.move({ workspace = '2', monitor = 'DP-1' })"
+        );
+    }
+
+    #[test]
+    fn restore_sends_workspaces_back_to_their_monitors() {
+        let session = session_of(vec![
+            on_monitor("foot", (1, "1"), "eDP-1"),
+            on_monitor("code", (2, "2"), "eDP-1"),
+        ]);
+        let hypr = MockHyprctl::new(vec![vec![]]); // mock reports monitor eDP-1
+        let report =
+            restore_session(&session, &hypr, &fast_config(), &RestoreOptions::default()).unwrap();
+        assert_eq!(report.monitors_placed, 2);
+        let moves: Vec<_> = hypr
+            .calls()
+            .into_iter()
+            .filter(|c| c.contains("workspace.move"))
+            .collect();
+        assert_eq!(moves.len(), 2);
+        assert!(moves.iter().any(|c| c.contains("workspace = '1'")));
+    }
+
+    #[test]
+    fn a_detached_monitor_is_left_alone() {
+        // The session was saved docked; this restore is on the road.
+        let session = session_of(vec![on_monitor("foot", (1, "1"), "DP-9-not-attached")]);
+        let hypr = MockHyprctl::new(vec![vec![]]);
+        let report =
+            restore_session(&session, &hypr, &fast_config(), &RestoreOptions::default()).unwrap();
+        assert_eq!(report.monitors_placed, 0);
+        assert!(
+            !hypr.calls().iter().any(|c| c.contains("workspace.move")),
+            "nothing should be moved to a monitor that is not there"
+        );
+    }
+
     #[test]
     fn restore_spawns_every_window_once() {
         let session = session_of(vec![
@@ -597,10 +775,15 @@ mod tests {
         let report =
             restore_session(&session, &hypr, &fast_config(), &RestoreOptions::default()).unwrap();
         assert_eq!(report.spawned, 2);
-        let calls = hypr.calls();
-        assert_eq!(calls.len(), 2);
-        assert!(calls[0].contains("[[foot]]"));
-        assert!(calls[1].contains("[[google-chrome]]"));
+        // Only the spawns: a restore also issues placement and monitor calls.
+        let spawns: Vec<_> = hypr
+            .calls()
+            .into_iter()
+            .filter(|c| c.contains("exec_cmd"))
+            .collect();
+        assert_eq!(spawns.len(), 2);
+        assert!(spawns[0].contains("[[foot]]"));
+        assert!(spawns[1].contains("[[google-chrome]]"));
     }
 
     #[test]
