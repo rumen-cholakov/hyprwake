@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.1.3
+
+### Diagnostics
+
+- **`hyprwake status` answers the question you actually have in the morning**:
+  will the desktop come back? It reports the default snapshot's window count
+  and age, the watcher, the Omarchy hooks and the autosave timer. Unlike
+  `doctor` it asks the compositor nothing, so it still answers from a TTY when
+  the graphical session is the thing that failed.
+- **`hyprwake diff` compares a saved session with the desktop in front of
+  you** and names what is missing and what is unexpected — the quick way to
+  see whether a restore finished, or whether a snapshot has drifted from the
+  way you now work. The comparison is by application class and workspace, not
+  by window identity, so it stays coarse on purpose.
+- **`hyprwake doctor --json`** emits the same checks as a stable structured
+  document, for scripts and for filling in a compatibility report.
+
+### Reporting
+
+- **`hyprwake support-bundle` writes a report that is safe to attach to an
+  issue.** A restore that fails nearly always fails because of the
+  environment, and the obvious evidence — a snapshot, a log — is exactly the
+  material that carries project names, session identifiers and credentials
+  passed on command lines. The bundle carries the version, the OS and
+  architecture, and the `doctor` checks with home directories redacted. It
+  carries nothing else, and that is a deliberate constraint on what may be
+  added to it later.
+- **Compatibility and enhancement issue templates**, and a
+  [compatibility matrix](docs/COMPATIBILITY.md) that records setups confirmed
+  by a real reboot rather than by a passing build. Hyprwake has been verified
+  on one machine, with one display; the matrix says so, and separates what CI
+  establishes from what only a desktop can.
+
+### Documentation
+
+- **Snapshots are documented as private desktop state.** They record window
+  titles, command lines and working directories because a restore needs them.
+  The README now says that plainly, says which directories hold it, and says
+  which diagnostic output is safe to share unreviewed and which is not.
+- **A first-reboot procedure for Omarchy** — save, dry-run, install, doctor,
+  and only then hand a boot hook your desktop.
+- The install example pins the current tag, and the advertised test count
+  matches the suite again.
+
 ## 0.1.2
 
 ### Restore

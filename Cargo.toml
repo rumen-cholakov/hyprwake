@@ -1,6 +1,6 @@
 [package]
 name = "hyprwake"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "Save and restore Hyprland sessions: windows, workspaces, terminal directories and TUIs"
 license = "MIT"
