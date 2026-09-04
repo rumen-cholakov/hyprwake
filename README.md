@@ -115,7 +115,7 @@ hyprwake restore --dry-run      # print every dispatch instead of running it
 hyprwake restore --max-age 7d   # skip a session older than this
 hyprwake restore --force        # restore even though windows are open
 hyprwake restore --missing-only # open only what is missing, leave the rest
-hyprwake diff                   # compare a snapshot with the current desktop
+hyprwake diff                   # compare class/workspace counts with the desktop
 hyprwake list -v                # saved sessions, and what is in them
 hyprwake delete NAME
 
@@ -127,7 +127,7 @@ hyprwake autosave --now         # snapshot and rotate
 
 hyprwake status                 # concise restore/watcher health summary
 hyprwake doctor                 # check the whole pipeline
-hyprwake doctor --json          # same checks, structured for scripts
+hyprwake doctor --json          # same checks, structured for local scripts
 hyprwake support-bundle         # sanitized diagnostic report for an issue
 hyprwake config --init          # write a config seeded from this machine
 ```
@@ -170,6 +170,11 @@ in command-line arguments.
 metadata and redacted `doctor` checks. It deliberately excludes snapshots,
 logs, configuration, command arguments, working directories, and window
 titles, so it is the preferred starting point for an issue report.
+
+`hyprwake doctor --json` is intended for local scripts, not for sharing
+unchanged: its checks can contain local paths. `hyprwake diff` is also a
+coarse comparison—it compares window counts by application class and
+workspace, not individual window identity.
 
 ## Configuration
 
