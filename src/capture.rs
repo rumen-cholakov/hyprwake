@@ -240,7 +240,7 @@ fn with_resume_args(
         if rule.id_command.is_empty() {
             return None;
         }
-        let command = crate::resume::render_command(&rule.id_command, cwd, &home_dir());
+        let command = crate::resume::render_command(&rule.id_command, cwd, &home_dir())?;
         crate::resume::run_id_command(&command, ID_COMMAND_TIMEOUT)
     });
 

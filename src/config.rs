@@ -371,7 +371,13 @@ fn default_resume_rules() -> HashMap<String, ResumeConfig> {
     // codex keeps no per-session file open; its state database records the
     // working directory of every thread, so the session for this directory
     // can be looked up. The database name carries a migration number, hence
-    // the glob for the newest one.
+    // the glob for the newest one — which is the only reason this needs a
+    // shell at all.
+    //
+    // The home directory and the query arrive as positional parameters ($1,
+    // $2) rather than spliced into the script, so no directory name is ever
+    // parsed as shell. 0.1.3 spliced `{cwd_sql}` into the script text, and a
+    // directory named `$(…)` was executed on every save.
     rules.insert(
         "codex".to_string(),
         ResumeConfig {
@@ -379,7 +385,14 @@ fn default_resume_rules() -> HashMap<String, ResumeConfig> {
             id_command: vec![
                 "sh".to_string(),
                 "-c".to_string(),
-                "db=$(ls -t {home}/.codex/state_*.sqlite 2>/dev/null | head -1);                  [ -n \"$db\" ] || exit 0;                  sqlite3 \"file:$db?mode=ro\"                  \"SELECT id FROM threads WHERE cwd = '{cwd_sql}' AND archived = 0                  ORDER BY updated_at DESC LIMIT 1;\" 2>/dev/null"
+                "db=$(ls -t \"$1\"/.codex/state_*.sqlite 2>/dev/null | head -1); \
+                 [ -n \"$db\" ] || exit 0; \
+                 exec sqlite3 \"file:$db?mode=ro\" \"$2\" 2>/dev/null"
+                    .to_string(),
+                "sh".to_string(),
+                "{home}".to_string(),
+                "SELECT id FROM threads WHERE cwd = '{cwd_sql}' AND archived = 0 \
+                 ORDER BY updated_at DESC LIMIT 1;"
                     .to_string(),
             ],
             args: vec!["resume".to_string(), "{id}".to_string()],
@@ -694,6 +707,155 @@ args = ["--session", "{id}"]
         assert!(rule.fd_glob.is_none());
         assert_eq!(rule.args, vec!["--session", "{id}"]);
         assert!(rule.fallback.is_empty());
+    }
+
+    /// A working directory is attacker-controlled — a subdirectory of a cloned
+    /// repository can be named anything — and every shipped id_command runs
+    /// on every save. No directory name may reach a shell as code.
+    #[test]
+    fn a_hostile_directory_name_is_never_executed_by_a_shipped_rule() {
+        let home = tempfile::TempDir::new().unwrap();
+        // Give the codex rule a database to find, so its lookup runs past
+        // the early exit and actually uses {cwd_sql}.
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+        std::fs::write(home.path().join(".codex/state_1.sqlite"), b"").unwrap();
+        let marker_dir = tempfile::TempDir::new().unwrap();
+
+        let c: Config = toml::from_str("").unwrap();
+        let mut ran = Vec::new();
+        for (name, rule) in &c.tui.resume {
+            if rule.id_command.is_empty() {
+                continue;
+            }
+            for (i, template) in [
+                "/w/x$(touch {m})",
+                "/w/x`touch {m}`",
+                "/w/x\"; touch {m}; \"",
+                "/w/x'; touch {m}; '",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let marker = marker_dir.path().join(format!("{name}-{i}"));
+                let cwd = template.replace("{m}", &marker.to_string_lossy());
+                if let Some(command) = crate::resume::render_command(
+                    &rule.id_command,
+                    &cwd,
+                    &home.path().to_string_lossy(),
+                ) {
+                    let _ =
+                        crate::resume::run_id_command(&command, std::time::Duration::from_secs(5));
+                }
+                if marker.exists() {
+                    ran.push(format!("{name}: {template}"));
+                }
+            }
+        }
+        assert!(ran.is_empty(), "directory names executed as code: {ran:#?}");
+    }
+
+    /// A shipped rule must never need the guard: values reach any script as
+    /// positional parameters, not spliced into its text.
+    #[test]
+    fn no_shipped_rule_splices_a_value_into_script_text() {
+        let c: Config = toml::from_str("").unwrap();
+        for (name, rule) in &c.tui.resume {
+            if let Some(i) = crate::resume::script_argument(&rule.id_command) {
+                let script = &rule.id_command[i];
+                for placeholder in ["{cwd}", "{cwd_sql}", "{home}"] {
+                    assert!(
+                        !script.contains(placeholder),
+                        "{name} splices {placeholder} into script text"
+                    );
+                }
+            }
+        }
+    }
+
+    fn sqlite(db: &std::path::Path, sql: &str) -> bool {
+        std::process::Command::new("sqlite3")
+            .arg(db)
+            .arg(sql)
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    /// Run a shipped rule against a real database. Directory names that are
+    /// awkward but legitimate must still resolve to their own session, and a
+    /// hostile one must resolve as *data* — its own id — rather than run.
+    fn check_rule_against(name: &str, home: &std::path::Path, rows: &[(&str, &str)]) {
+        let c: Config = toml::from_str("").unwrap();
+        let rule = c.tui.resume.get(name).unwrap();
+        let marker = home.join("executed");
+        for (cwd, id) in rows {
+            let cwd = cwd.replace("{m}", &marker.to_string_lossy());
+            let command =
+                crate::resume::render_command(&rule.id_command, &cwd, &home.to_string_lossy())
+                    .unwrap_or_else(|| panic!("{name}: refused {cwd:?}"));
+            let got = crate::resume::run_id_command(&command, std::time::Duration::from_secs(5));
+            assert_eq!(got.as_deref(), Some(*id), "{name}: {cwd:?}");
+        }
+        assert!(!marker.exists(), "{name}: a directory name was executed");
+    }
+
+    const AWKWARD: &[(&str, &str)] = &[
+        ("/w/plain", "id-plain"),
+        ("/w/Project (old)", "id-parens"),
+        ("/w/it's", "id-quote"),
+        ("/w/Проекти", "id-cyrillic"),
+        ("/w/$(touch {m})", "id-dollar"),
+        ("/w/`touch {m}`", "id-backtick"),
+        ("/w/x\"; touch {m}; \"", "id-dquote"),
+    ];
+
+    fn sql_quote(s: &str) -> String {
+        s.replace('\'', "''")
+    }
+
+    #[test]
+    fn the_codex_rule_resolves_awkward_directories_as_data() {
+        if which::which("sqlite3").is_err() {
+            eprintln!("skipped: sqlite3 not installed");
+            return;
+        }
+        let home = tempfile::TempDir::new().unwrap();
+        let marker = home.path().join("executed");
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+        let db = home.path().join(".codex/state_5.sqlite");
+        let mut sql = String::from(
+            "CREATE TABLE threads (id TEXT, cwd TEXT, archived INTEGER, updated_at INTEGER);",
+        );
+        for (i, (cwd, id)) in AWKWARD.iter().enumerate() {
+            let cwd = cwd.replace("{m}", &marker.to_string_lossy());
+            sql.push_str(&format!(
+                "INSERT INTO threads VALUES ('{id}', '{}', 0, {i});",
+                sql_quote(&cwd)
+            ));
+        }
+        assert!(sqlite(&db, &sql));
+        check_rule_against("codex", home.path(), AWKWARD);
+    }
+
+    #[test]
+    fn a_missing_database_falls_back_rather_than_failing() {
+        let home = tempfile::TempDir::new().unwrap();
+        let c: Config = toml::from_str("").unwrap();
+        {
+            let name = "codex";
+            let rule = c.tui.resume.get(name).unwrap();
+            let command = crate::resume::render_command(
+                &rule.id_command,
+                "/w",
+                &home.path().to_string_lossy(),
+            )
+            .unwrap();
+            assert_eq!(
+                crate::resume::run_id_command(&command, std::time::Duration::from_secs(5)),
+                None,
+                "{name}"
+            );
+            assert!(!rule.fallback.is_empty(), "{name} has a fallback");
+        }
     }
 
     #[test]

@@ -215,8 +215,14 @@ strip_flags = ["--resume", "-c", "--continue"]
 # nothing per-process. It runs as you, at save time, with a 3s timeout;
 # {cwd}, {cwd_sql} (quotes doubled) and {home} are substituted, and the id
 # is validated before it reaches a command line.
+#
+# When a shell is unavoidable, hand values to it as positional parameters —
+# never write a placeholder inside the script text. A directory can be named
+# `$(...)`, and a script would run it. hyprwake refuses to splice a directory
+# name containing shell-active characters into a script, and falls back.
 [tui.resume.codex]
-id_command = ["sh", "-c", "... SELECT id FROM threads WHERE cwd = '{cwd_sql}' ..."]
+id_command = ["sh", "-c", "db=$(ls -t \"$1\"/.codex/state_*.sqlite | head -1); exec sqlite3 \"file:$db?mode=ro\" \"$2\"",
+              "sh", "{home}", "SELECT id FROM threads WHERE cwd = '{cwd_sql}' ..."]
 args = ["resume", "{id}"]
 fallback = ["resume", "--last"]
 strip_flags = ["resume", "--last"]

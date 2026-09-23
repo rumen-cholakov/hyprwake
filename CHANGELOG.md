@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Security
+
+- **A directory name could be executed by the shipped codex resume rule.**
+  The codex `id_command` spliced `{cwd_sql}` into the text of an `sh -c`
+  script. `{cwd_sql}` doubles single quotes for SQL, but the query sat inside a
+  shell *double-quoted* string, so a working directory named `$(…)`, `` `…` ``
+  or `"; …; "` was run as shell on every save — by the watcher, unattended —
+  whenever codex was open there. A subdirectory of a cloned repository can be
+  named anything. The shipped rule now passes the home directory and the query
+  as positional parameters, which the shell never parses. Affects 0.1.0
+  through 0.1.3 — every release so far.
+- **Configs copied from the README are protected too.** The README showed the
+  same pattern to copy. `id_command` now refuses to substitute a directory name
+  containing shell-active characters into script text — the argument after
+  `sh -c`, `python -c`, `perl -e` and similar — and the rule falls back
+  instead. Values in ordinary arguments are unaffected. If you copied the old
+  codex example, replace it with the one now in the README.
+
 ### Fixes
 
 - **Tiled windows come back in the order they were saved.** Dwindle tiles

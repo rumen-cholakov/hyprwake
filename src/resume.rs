@@ -93,15 +93,111 @@ pub fn sanitize_id(raw: &str) -> Option<String> {
 ///
 /// `{cwd_sql}` doubles single quotes so a directory name containing one
 /// cannot break out of a SQL string literal.
-pub fn render_command(command: &[String], cwd: &str, home: &str) -> Vec<String> {
-    command
-        .iter()
-        .map(|arg| {
+///
+/// Returns `None` — the rule then falls back — when a value would be spliced
+/// into *script text*: the argument after `sh -c`, `python -c`, `perl -e` and
+/// the like. A working directory is attacker-controlled (a subdirectory of a
+/// cloned repository can be named anything) and this runs on every save, so
+/// a name such as `$(…)` placed inside a script would be executed. Values in
+/// ordinary arguments are passed through untouched, because no interpreter
+/// ever parses them; the safe way to hand a value to a script is as a
+/// positional parameter (`sh -c '… "$1" …' sh {cwd}`), which is how the
+/// shipped rules do it.
+pub fn render_command(command: &[String], cwd: &str, home: &str) -> Option<Vec<String>> {
+    let script = script_argument(command);
+    let mut out = Vec::with_capacity(command.len());
+    for (i, arg) in command.iter().enumerate() {
+        if Some(i) == script {
+            let uses_cwd = arg.contains("{cwd}") || arg.contains("{cwd_sql}");
+            let uses_home = arg.contains("{home}");
+            if (uses_cwd && !inert_in_script(cwd)) || (uses_home && !inert_in_script(home)) {
+                crate::logging::log(
+                    "resume: refusing to splice a directory name containing shell-active \
+                     characters into script text; pass it as a positional parameter instead",
+                );
+                return None;
+            }
+        }
+        out.push(
             arg.replace("{cwd_sql}", &cwd.replace('\'', "''"))
                 .replace("{cwd}", cwd)
-                .replace("{home}", home)
+                .replace("{home}", home),
+        );
+    }
+    Some(out)
+}
+
+/// How an interpreter is told that an argument is program text.
+enum ScriptFlag {
+    /// `-c`, or a short-flag cluster ending in it: `sh -ec '…'`. Shells take
+    /// `-e` as errexit, so `e` must not count here.
+    ClusterEndingIn(char),
+    /// Exactly one of these spellings.
+    Exact(&'static [&'static str]),
+}
+
+/// Interpreters whose script argument is code rather than data.
+fn script_flag(program: &str) -> Option<ScriptFlag> {
+    // `python3.12` and `python3` are `python`.
+    let base = program.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    Some(match base {
+        "sh" | "bash" | "dash" | "zsh" | "ksh" | "mksh" | "ash" | "busybox" => {
+            ScriptFlag::ClusterEndingIn('c')
+        }
+        "fish" => ScriptFlag::Exact(&["-c", "--command"]),
+        "python" => ScriptFlag::ClusterEndingIn('c'),
+        "perl" | "ruby" => ScriptFlag::ClusterEndingIn('e'),
+        "node" | "bun" => ScriptFlag::Exact(&["-e", "--eval", "-p", "--print"]),
+        "lua" => ScriptFlag::Exact(&["-e"]),
+        _ => return None,
+    })
+}
+
+/// The index of the argument an interpreter will parse as code, if any.
+///
+/// Looks past a leading `env` and its flags and `NAME=value` assignments,
+/// since `env sh -c '…'` is as much a script as `sh -c '…'`.
+pub(crate) fn script_argument(command: &[String]) -> Option<usize> {
+    let basename = |a: &str| -> String {
+        std::path::Path::new(a)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(a)
+            .to_string()
+    };
+    let mut i = 0;
+    if command.first().is_some_and(|a| basename(a) == "env") {
+        i = 1;
+        while command
+            .get(i)
+            .is_some_and(|a| a.starts_with('-') || a.contains('='))
+        {
+            i += 1;
+        }
+    }
+    let flag = script_flag(&basename(command.get(i)?))?;
+    command[i + 1..]
+        .iter()
+        .position(|a| match &flag {
+            ScriptFlag::ClusterEndingIn(c) => {
+                a.len() >= 2 && a.starts_with('-') && !a.starts_with("--") && a.ends_with(*c)
+            }
+            ScriptFlag::Exact(spellings) => spellings.contains(&a.as_str()),
         })
-        .collect()
+        .map(|p| i + 1 + p + 1)
+}
+
+/// Whether a value can sit anywhere in script text without the interpreter
+/// acting on it: no expansion, no quote that could close a literal, no
+/// command separator, no escape.
+fn inert_in_script(value: &str) -> bool {
+    !value.chars().any(|c| {
+        c.is_control()
+            || matches!(
+                c,
+                '$' | '`' | '\\' | '"' | '\'' | ';' | '&' | '|' | '<' | '>' | '(' | ')' | '{' | '}'
+            )
+    })
 }
 
 /// Run an id-command and return what it printed.
@@ -244,7 +340,7 @@ mod tests {
             "q {home} '{cwd_sql}' {cwd}".to_string(),
         ];
         assert_eq!(
-            render_command(&cmd, "/home/user/Work", "/home/user")[2],
+            render_command(&cmd, "/home/user/Work", "/home/user").unwrap()[2],
             "q /home/user '/home/user/Work' /home/user/Work"
         );
     }
@@ -253,9 +349,96 @@ mod tests {
     fn a_quote_in_a_directory_cannot_escape_a_sql_literal() {
         let cmd = vec!["q '{cwd_sql}'".to_string()];
         assert_eq!(
-            render_command(&cmd, "/home/user/it's", "/home/user")[0],
+            render_command(&cmd, "/home/user/it's", "/home/user").unwrap()[0],
             "q '/home/user/it''s'"
         );
+    }
+
+    fn args(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_script_argument_is_found_per_interpreter() {
+        assert_eq!(script_argument(&args(&["sh", "-c", "x"])), Some(2));
+        assert_eq!(script_argument(&args(&["/bin/bash", "-ec", "x"])), Some(2));
+        // For a shell -e is errexit, not a script: the script is after -c.
+        assert_eq!(script_argument(&args(&["sh", "-e", "-c", "x"])), Some(3));
+        assert_eq!(
+            script_argument(&args(&["env", "A=1", "sh", "-c", "x"])),
+            Some(4)
+        );
+        assert_eq!(
+            script_argument(&args(&["/usr/bin/env", "-i", "bash", "-c", "x"])),
+            Some(4)
+        );
+        assert_eq!(script_argument(&args(&["python3.12", "-c", "x"])), Some(2));
+        assert_eq!(script_argument(&args(&["perl", "-ne", "x"])), Some(2));
+        assert_eq!(script_argument(&args(&["node", "--eval", "x"])), Some(2));
+        assert_eq!(script_argument(&args(&["fish", "--command", "x"])), Some(2));
+    }
+
+    #[test]
+    fn a_program_that_is_not_an_interpreter_has_no_script() {
+        assert_eq!(
+            script_argument(&args(&["sqlite3", "db", "SELECT '{cwd_sql}'"])),
+            None
+        );
+        assert_eq!(script_argument(&args(&["sh", "script.sh", "{cwd}"])), None);
+        assert_eq!(script_argument(&args(&[])), None);
+    }
+
+    /// The pattern 0.1.3 shipped for codex, and documented in the README for
+    /// people to copy: `{cwd_sql}` inside a double-quoted string inside the
+    /// script. Configs carrying it still exist; the guard is what protects
+    /// them.
+    fn legacy_codex() -> Vec<String> {
+        args(&[
+            "sh",
+            "-c",
+            "db=$(ls -t {home}/.codex/state_*.sqlite | head -1); \
+             sqlite3 \"file:$db?mode=ro\" \"SELECT id FROM threads WHERE cwd = '{cwd_sql}';\"",
+        ])
+    }
+
+    #[test]
+    fn a_hostile_name_is_refused_in_script_text() {
+        for cwd in [
+            "/w/$(id)",
+            "/w/`id`",
+            "/w/a\"; id; \"",
+            "/w/a;id",
+            "/w/a\nid",
+            "/w/${HOME}",
+        ] {
+            assert_eq!(
+                render_command(&legacy_codex(), cwd, "/home/u"),
+                None,
+                "{cwd:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ordinary_name_still_renders_in_script_text() {
+        let rendered = render_command(&legacy_codex(), "/home/u/Проекти/api-v2.1", "/home/u")
+            .expect("a plain directory must not be refused");
+        assert!(rendered[2].contains("cwd = '/home/u/Проекти/api-v2.1'"));
+    }
+
+    #[test]
+    fn any_name_is_passed_through_as_an_ordinary_argument() {
+        // Outside script text nothing parses the value, so nothing is refused.
+        let cmd = args(&["sqlite3", "db", "SELECT id WHERE d = '{cwd_sql}'"]);
+        let rendered = render_command(&cmd, "/w/it's $(id)", "/home/u").unwrap();
+        assert_eq!(rendered[2], "SELECT id WHERE d = '/w/it''s $(id)'");
+    }
+
+    #[test]
+    fn a_placeholder_passed_positionally_is_never_refused() {
+        let cmd = args(&["sh", "-c", "printf %s \"$1\"", "sh", "{cwd}"]);
+        let rendered = render_command(&cmd, "/w/$(id)", "/home/u").unwrap();
+        assert_eq!(rendered[4], "/w/$(id)");
     }
 
     #[test]
