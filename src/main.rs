@@ -11,7 +11,7 @@ use hyprwake::save::{perform_save, SaveOutcome};
 use hyprwake::service;
 use hyprwake::session::{
     delete_session, list_autosave_sessions, list_sessions, load_session, parse_max_age,
-    session_exists, SessionError,
+    save_session, session_exists, SessionError,
 };
 use hyprwake::support;
 use std::path::Path;
@@ -218,6 +218,10 @@ fn cmd_save(
     }
 }
 
+/// The session a restore was started from, kept so it survives the autosave
+/// that follows. Restore it by name if the restore came back wrong.
+const PRERESTORE: &str = "prerestore";
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_restore(
     name: Option<String>,
@@ -274,6 +278,17 @@ fn cmd_restore(
                 eprintln!("hyprwake: {e}");
                 return ExitCode::FAILURE;
             }
+        }
+    }
+
+    // Keep what is about to be restored. `hyprwake watch` saves over `latest`
+    // seconds after the restored desktop settles, so without this a restore
+    // that came back wrong also destroys the only record of what was right.
+    if !dry_run {
+        let mut kept = session.clone();
+        kept.name = PRERESTORE.to_string();
+        if let Err(e) = save_session(&kept, dir) {
+            eprintln!("hyprwake: could not keep a copy as '{PRERESTORE}': {e}");
         }
     }
 

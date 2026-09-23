@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **Tiled windows come back in the order they were saved.** Dwindle tiles
+  windows in the order they *map*, and a restore launched a workspace's windows
+  back to back — so a terminal launched second overtook a browser or an
+  Electron app launched first, and every mixed pair came back mirrored. Found
+  after a real reboot: VS Code and Chrome swapped sides with their terminals on
+  every two-window workspace, while a pair of terminals, being equally fast,
+  came back correct. A restore now waits for each tiled window to map before
+  launching the next one onto the same workspace. Workspaces still restore in
+  parallel with each other. `tiled_map_timeout_ms` (default 10000, 0 to turn
+  the wait off) bounds the wait, so a program that never maps costs one timeout
+  and the report says that pair's order is not guaranteed.
+- **The session being restored is kept as `prerestore`.** `hyprwake watch`
+  saves over `latest` seconds after the restored desktop settles, so a restore
+  that came back wrong used to destroy the only record of what was right.
+  `hyprwake restore prerestore` brings back what the last restore started from.
+
 ## 0.1.3
 
 ### Diagnostics

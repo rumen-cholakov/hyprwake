@@ -107,6 +107,14 @@ pub fn restore_session(
         }
     }
 
+    // Tiled windows already on each workspace, and how many this restore has
+    // launched there, so the loop can tell when the last one has mapped.
+    let mut on_workspace: HashMap<String, usize> = HashMap::new();
+    for window in &initial {
+        *on_workspace.entry(window.workspace.selector()).or_default() += 1;
+    }
+    let mut last_tiled: Option<String> = None;
+
     for client in &order {
         if !client.launch.spawn {
             continue;
@@ -125,6 +133,29 @@ pub fn restore_session(
                 }
             }
         }
+        // Dwindle tiles in the order windows *map*. Before launching the next
+        // tiled window onto a workspace, wait for the previous one there to
+        // appear — otherwise a terminal launched second overtakes a browser
+        // launched first and the pair comes back swapped.
+        let selector = client.workspace.selector();
+        if !client.floating
+            && !opts.dry_run
+            && config.general.tiled_map_timeout_ms > 0
+            && last_tiled.as_deref() == Some(selector.as_str())
+        {
+            let want = on_workspace.get(&selector).copied().unwrap_or(0);
+            if !wait_for_map(hyprctl, config, &selector, want) {
+                log(format!(
+                    "tiled order: a window on {selector} did not map within {}ms; \
+                     launching the next anyway, so this pair may come back swapped",
+                    config.general.tiled_map_timeout_ms
+                ));
+                report.details.push(format!(
+                    "order not guaranteed on workspace {selector}: previous window did not map in time"
+                ));
+            }
+        }
+
         let command = launch_command(&client.launch.argv, use_uwsm);
         let call = exec_call(&command, &client.workspace, client);
         if opts.dry_run {
@@ -138,6 +169,10 @@ pub fn restore_session(
         match hyprctl.dispatch(&call) {
             Ok(()) => {
                 report.spawned += 1;
+                if !client.floating {
+                    *on_workspace.entry(selector.clone()).or_default() += 1;
+                    last_tiled = Some(selector.clone());
+                }
                 if opts.verbose {
                     report.details.push(format!(
                         "spawn {} → {}",
@@ -616,6 +651,39 @@ pub fn fix_calls(client: &SessionClient, address: &str) -> Vec<String> {
     calls
 }
 
+/// How often `wait_for_map` looks. Short, because the thing being waited on
+/// is usually a terminal that maps in a few milliseconds.
+const MAP_POLL_MS: u64 = 25;
+
+/// Wait until `workspace` holds at least `want` restorable windows.
+///
+/// Returns false on timeout, which the caller reports rather than treats as
+/// failure: a program that never maps must not hold up everything after it.
+fn wait_for_map(
+    hyprctl: &dyn HyprctlClient,
+    config: &Config,
+    workspace: &str,
+    want: usize,
+) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(config.general.tiled_map_timeout_ms);
+    loop {
+        let here = live_windows(hyprctl, config)
+            .map(|ws| {
+                ws.iter()
+                    .filter(|w| w.workspace.selector() == workspace)
+                    .count()
+            })
+            .unwrap_or(0);
+        if here >= want {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        sleep(Duration::from_millis(MAP_POLL_MS));
+    }
+}
+
 fn live_windows(
     hyprctl: &dyn HyprctlClient,
     config: &Config,
@@ -698,8 +766,201 @@ mod tests {
         c.general.spawn_stagger_ms = 0;
         c.general.sweep_poll_ms = 0;
         c.general.sweep_timeout_secs = 0;
+        c.general.tiled_map_timeout_ms = 0;
         c.launch.use_uwsm = Some(false);
         c
+    }
+
+    // ── tiled order ──
+    //
+    // Dwindle tiles in map order. These drive a compositor where each program
+    // takes a given number of polls to map, and record the interleaving of
+    // launches and polls so the order can be asserted, not inferred.
+
+    use std::cell::RefCell;
+
+    /// A compositor where each program maps `delay` polls after it launches.
+    struct SlowMaps {
+        delays: HashMap<String, usize>,
+        launched: RefCell<Vec<(String, WorkspaceRef, usize)>>,
+        polls: RefCell<usize>,
+        log: RefCell<Vec<String>>,
+    }
+
+    impl SlowMaps {
+        fn new(delays: &[(&str, usize)]) -> Self {
+            Self {
+                delays: delays.iter().map(|(c, d)| (c.to_string(), *d)).collect(),
+                launched: RefCell::new(vec![]),
+                polls: RefCell::new(0),
+                log: RefCell::new(vec![]),
+            }
+        }
+        fn launches(&self) -> Vec<String> {
+            self.log
+                .borrow()
+                .iter()
+                .filter(|l| l.starts_with("launch"))
+                .cloned()
+                .collect()
+        }
+    }
+
+    impl HyprctlClient for SlowMaps {
+        fn get_clients(&self) -> Result<Vec<HyprClient>, crate::hyprctl::HyprctlError> {
+            *self.polls.borrow_mut() += 1;
+            let now = *self.polls.borrow();
+            let mapped: Vec<HyprClient> = self
+                .launched
+                .borrow()
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, _, at))| now >= *at)
+                .map(|(i, (class, ws, _))| live(class, (ws.id, &ws.name), &format!("0x{i}")))
+                .collect();
+            self.log
+                .borrow_mut()
+                .push(format!("poll sees {}", mapped.len()));
+            Ok(mapped)
+        }
+        fn get_monitors(
+            &self,
+        ) -> Result<Vec<crate::hyprctl::HyprMonitor>, crate::hyprctl::HyprctlError> {
+            Ok(vec![])
+        }
+        fn dispatch(&self, call: &str) -> Result<(), crate::hyprctl::HyprctlError> {
+            let Some(class) = self
+                .delays
+                .keys()
+                .find(|c| call.contains(&format!("[[{c}]]")))
+            else {
+                return Ok(());
+            };
+            let ws = if call.contains("'5 silent'") {
+                WorkspaceRef::new(5, "5")
+            } else {
+                WorkspaceRef::new(6, "6")
+            };
+            let at = *self.polls.borrow() + self.delays[class];
+            self.launched.borrow_mut().push((class.clone(), ws, at));
+            self.log.borrow_mut().push(format!("launch {class}"));
+            Ok(())
+        }
+        fn get_hyprland_version(&self) -> Result<String, crate::hyprctl::HyprctlError> {
+            Ok("0.56.2".into())
+        }
+    }
+
+    fn at(mut c: SessionClient, x: i32) -> SessionClient {
+        c.at = [x, 30];
+        c
+    }
+
+    fn ordered_config() -> Config {
+        let mut c = fast_config();
+        c.general.tiled_map_timeout_ms = 2_000;
+        c
+    }
+
+    #[test]
+    fn a_slow_window_launched_first_maps_before_the_next_one_launches() {
+        // The bug: VS Code left, terminal right; after reboot, swapped. The
+        // terminal was launched second but mapped first.
+        let hypr = SlowMaps::new(&[("code", 5), ("foot", 0)]);
+        let session = session_of(vec![
+            at(saved("foot", (5, "5")), 771),
+            at(saved("code", (5, "5")), 4),
+        ]);
+        restore_session(
+            &session,
+            &hypr,
+            &ordered_config(),
+            &RestoreOptions::default(),
+        )
+        .unwrap();
+
+        let log = hypr.log.borrow().clone();
+        let code = log
+            .iter()
+            .position(|l| l == "launch code")
+            .expect("code launched");
+        let foot = log
+            .iter()
+            .position(|l| l == "launch foot")
+            .expect("foot launched");
+        assert!(code < foot, "left window must launch first: {log:?}");
+        assert!(
+            log[code..foot].iter().any(|l| l == "poll sees 1"),
+            "foot launched before code had mapped: {log:?}"
+        );
+    }
+
+    #[test]
+    fn without_waiting_the_race_is_real() {
+        // The control. With no wait the fast window is launched while the slow
+        // one is still unmapped — which is exactly the swap. If this ever
+        // fails, the test above is not testing anything.
+        let hypr = SlowMaps::new(&[("code", 5), ("foot", 0)]);
+        let session = session_of(vec![
+            at(saved("foot", (5, "5")), 771),
+            at(saved("code", (5, "5")), 4),
+        ]);
+        restore_session(&session, &hypr, &fast_config(), &RestoreOptions::default()).unwrap();
+
+        let log = hypr.log.borrow().clone();
+        let code = log.iter().position(|l| l == "launch code").unwrap();
+        let foot = log.iter().position(|l| l == "launch foot").unwrap();
+        assert!(
+            !log[code..foot].iter().any(|l| l == "poll sees 1"),
+            "expected foot to launch before code mapped: {log:?}"
+        );
+    }
+
+    #[test]
+    fn different_workspaces_do_not_wait_on_each_other() {
+        // Waiting is per workspace. A slow browser on 6 must not delay a
+        // terminal on 5 — a restore should still take seconds, not minutes.
+        let hypr = SlowMaps::new(&[("google-chrome", 1_000_000), ("foot", 0)]);
+        let session = session_of(vec![
+            at(saved("google-chrome", (6, "6")), 4),
+            at(saved("foot", (5, "5")), 4),
+        ]);
+        let started = Instant::now();
+        restore_session(
+            &session,
+            &hypr,
+            &ordered_config(),
+            &RestoreOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(hypr.launches().len(), 2);
+        assert!(
+            started.elapsed() < Duration::from_millis(1_500),
+            "waited across workspaces"
+        );
+    }
+
+    #[test]
+    fn a_window_that_never_maps_does_not_block_the_restore() {
+        // A program that crashes before mapping must cost one timeout, not the
+        // rest of the session — and the report says the order is not assured.
+        let hypr = SlowMaps::new(&[("code", 1_000_000), ("foot", 0)]);
+        let mut cfg = fast_config();
+        cfg.general.tiled_map_timeout_ms = 100;
+        let session = session_of(vec![
+            at(saved("foot", (5, "5")), 771),
+            at(saved("code", (5, "5")), 4),
+        ]);
+        let report = restore_session(&session, &hypr, &cfg, &RestoreOptions::default()).unwrap();
+        assert_eq!(hypr.launches(), vec!["launch code", "launch foot"]);
+        assert!(
+            report
+                .details
+                .iter()
+                .any(|d| d.contains("order not guaranteed")),
+            "{:?}",
+            report.details
+        );
     }
 
     // ── command building ──

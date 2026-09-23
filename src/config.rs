@@ -48,6 +48,17 @@ pub struct GeneralConfig {
     /// Interval between sweep polls.
     #[serde(default = "default_sweep_poll")]
     pub sweep_poll_ms: u64,
+    /// How long a restore waits for one tiled window to map before launching
+    /// the next one on the same workspace.
+    ///
+    /// Dwindle tiles windows in the order they *map*, not the order they were
+    /// launched, and a terminal maps in milliseconds while an Electron app or
+    /// a browser takes seconds. Launching a workspace's windows back to back
+    /// let the fast one overtake the slow one and swapped them. Waiting keeps
+    /// the saved left-to-right order; the timeout keeps one program that never
+    /// maps from holding up the rest of the restore. 0 turns the wait off.
+    #[serde(default = "default_tiled_map_timeout")]
+    pub tiled_map_timeout_ms: u64,
     /// Refuse a save that keeps less than this fraction of the windows the
     /// previous save held. 1.0 refuses any loss, 0.0 disables the guard.
     #[serde(default = "default_drop_fraction")]
@@ -204,6 +215,9 @@ fn default_sweep_timeout() -> u64 {
 }
 fn default_sweep_poll() -> u64 {
     1000
+}
+fn default_tiled_map_timeout() -> u64 {
+    10_000
 }
 fn default_abort_above() -> usize {
     3
@@ -410,6 +424,7 @@ impl Default for GeneralConfig {
             spawn_stagger_ms: default_stagger(),
             sweep_timeout_secs: default_sweep_timeout(),
             sweep_poll_ms: default_sweep_poll(),
+            tiled_map_timeout_ms: default_tiled_map_timeout(),
             save_drop_fraction: default_drop_fraction(),
             save_drop_window_secs: default_drop_window_secs(),
             abort_restore_above: default_abort_above(),
