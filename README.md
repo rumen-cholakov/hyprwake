@@ -44,7 +44,11 @@ That covers every program the compositor can attribute to the process it
 spawned. Single-instance programs — browsers, Electron apps, Obsidian — hand
 the request to an already-running process instead, and their window arrives
 unattributed. A sweep afterwards pairs those strays with their saved entry by
-window class and places them explicitly.
+window class — preferring an entry already on the window's workspace, then one
+whose title it shares, so two VS Code windows from one process each find
+their own folder's workspace — and places them explicitly. `--verbose` says
+what decided each pairing, and the report counts any that only saved order
+could decide.
 
 Saving runs off Hyprland's event socket. `hyprwake watch` saves a couple of
 seconds after the layout stops changing, so a crash or a power cut costs you
@@ -117,7 +121,7 @@ hyprwake restore --max-age 7d   # skip a session older than this
 hyprwake restore --force        # restore even though windows are open
 hyprwake restore --missing-only # open only what is missing, leave the rest
 hyprwake restore --topology saved  # only onto the monitors it was saved on
-hyprwake diff                   # compare class/workspace counts with the desktop
+hyprwake diff                   # what is missing, unexpected or moved, by class
 hyprwake list -v                # saved sessions, and what is in them
 hyprwake delete NAME
 
@@ -162,9 +166,10 @@ hard way:
 
 ## Privacy
 
-Snapshots in `~/.local/share/hyprwake/sessions/` record window titles,
-application command lines, working directories, workspace names, and browser
-profile names so they can be restored. The log lives in
+Snapshots in `~/.local/share/hyprwake/sessions/` record window titles (current
+and initial), application command lines and executable paths, working
+directories, workspace names, and browser profile names so they can be
+restored. The log lives in
 `~/.local/state/hyprwake/`. Treat both directories as private desktop state:
 do not share a snapshot or log without reviewing it, and avoid placing secrets
 in command-line arguments.
@@ -175,9 +180,10 @@ logs, configuration, command arguments, working directories, and window
 titles, so it is the preferred starting point for an issue report.
 
 `hyprwake doctor --json` is intended for local scripts, not for sharing
-unchanged: its checks can contain local paths. `hyprwake diff` is also a
-coarse comparison—it compares window counts by application class and
-workspace, not individual window identity.
+unchanged: its checks can contain local paths. `hyprwake diff` pairs windows
+the way restore does — titles included — but prints only counts by
+application class and workspace: what is missing, what is unexpected, and
+what is open on the wrong workspace.
 
 ## Configuration
 

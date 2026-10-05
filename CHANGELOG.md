@@ -66,6 +66,20 @@
   says why any workspace went somewhere other than its own connector. Checked
   against recorded `hyprctl monitors -j` fixtures; not yet through the
   multi-monitor release gate, which is why none of it is on by default.
+- **One way of telling windows apart, used everywhere.** The restore sweep,
+  `--missing-only` and `hyprwake diff` now pair live windows with saved ones
+  through the same ranking: class (or the class a window announced when it
+  first mapped), then already being on the saved workspace, then a shared
+  title, then saved order. Titles never decide whether a window matches —
+  only which of several equally good candidates it is — which is what tells
+  two windows of one VS Code process apart. `restore --verbose` says what
+  decided each pairing, and the summary counts pairings that only saved order
+  could decide. Snapshots record each window's executable and initial title
+  for support reports; neither is used for matching, because within a class
+  they are the same for every window.
+- **`hyprwake diff` reports moved windows.** A saved window that is open on
+  another workspace is listed as moved, as restore would treat it, instead of
+  as one missing and one unexpected.
 - **opencode conversations come back.** opencode is now reopened inside its
   terminal and resumed with `--session <id>`, looked up in its own database by
   directory. Subagent runs, which opencode records as child sessions in the
@@ -81,6 +95,12 @@ from an earlier README, replace it with the current one (see Security).
 
 ### Fixes
 
+- **`--missing-only` relaunched the wrong window.** It took the first saved
+  window of a class to be the one already open: with a terminal open on
+  workspace 2 out of three saved on 1, 2 and 3, it launched a second terminal
+  onto workspace 2, none onto 1, and then reported one as never having
+  appeared. The open window is now paired with the saved entry it is, the
+  others are launched, and an open window is no longer waited for.
 - **A terminal standing in a deleted directory is reopened somewhere real.**
   The kernel reports a removed working directory as `"<path> (deleted)"`, and
   hyprwake captured exactly that — a terminal restored into a directory that

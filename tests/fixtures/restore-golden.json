@@ -26,6 +26,8 @@
         "already open: foot",
         "spawn code → 1",
         "spawn obsidian → 2",
+        "paired code → 0x2 (class, same workspace)",
+        "paired obsidian → 0x3 (class, same workspace)",
         "workspace 1 → eDP-1",
         "workspace 2 → eDP-1"
       ],
@@ -33,15 +35,16 @@
         "hl.dsp.exec_cmd([[code]], { workspace = '1 silent' })",
         "hl.dsp.exec_cmd([[obsidian]], { workspace = '2 silent' })",
         "hl.dsp.workspace.move({ workspace = '1', monitor = 'eDP-1' })",
-        "hl.dsp.workspace.move({ workspace = '2', monitor = 'eDP-1' })"
+        "hl.dsp.workspace.move({ workspace = '2', monitor = 'eDP-1' })",
+        "hl.dsp.focus({ window = 'address:0x1' })"
       ],
       "failed": 0,
-      "focus_restored": false,
+      "focus_restored": true,
       "groups_unrestored": 0,
       "monitors_placed": 2,
       "placed": 0,
       "spawned": 2,
-      "unmatched": 1
+      "unmatched": 0
     }
   },
   "mixed-quiet": {
@@ -157,9 +160,15 @@
         "spawn mpv → 10",
         "spawn foot → special:magic",
         "spawn obsidian → 2",
+        "paired foot → 0xa (class, same workspace)",
+        "paired code → 0xb (class)",
         "place code → 1",
+        "paired obsidian → 0xc (class, same workspace)",
         "place obsidian → 2",
+        "paired google-chrome → 0xd (class, same workspace)",
+        "paired mpv → 0xe (class, same workspace)",
         "place mpv → 10",
+        "paired foot → 0xf (class, same workspace)",
         "workspace 1 → eDP-1",
         "monitor HDMI-A-1 is not attached; leaving workspace 10",
         "workspace 2 → eDP-1",
@@ -264,6 +273,8 @@
       "details": [
         "spawn code → 5",
         "spawn foot → 5",
+        "paired code → 0xb (class, same workspace)",
+        "paired foot → 0xa (class, same workspace)",
         "workspace 5 → eDP-1"
       ],
       "dispatched": [

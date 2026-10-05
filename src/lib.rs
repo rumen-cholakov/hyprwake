@@ -7,6 +7,7 @@ pub mod doctor;
 pub mod hyprctl;
 pub mod logging;
 pub mod lua;
+pub mod matching;
 pub mod omarchy;
 pub mod plan;
 pub mod process;

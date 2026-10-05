@@ -65,6 +65,9 @@ pub struct RestoreReport {
     pub focus_restored: bool,
     /// Windows the session wanted that were already open.
     pub already_open: usize,
+    /// Pairings that nothing but saved order decided: several saved windows
+    /// were equally good candidates. Each is named in the log.
+    pub guessed: usize,
     pub details: Vec<String>,
 }
 
@@ -189,7 +192,13 @@ fn execute(
 
     for step in &plan.steps {
         match step {
-            Step::AlreadyOpen { class, .. } => {
+            Step::AlreadyOpen {
+                client,
+                class,
+                address,
+            } => {
+                // Known now, so focus can still find it at the end.
+                paired.insert(*client, address.clone());
                 if opts.verbose {
                     report.details.push(format!("already open: {class}"));
                 }
@@ -269,7 +278,15 @@ fn execute(
                     placed.clients[*index] =
                         crate::plan::with_geometry(&session.clients[*index], Some(geometry));
                 }
-                paired = sweep(&placed, expect, hyprctl, config, opts, seen, &mut report);
+                paired.extend(sweep(
+                    &placed,
+                    expect,
+                    hyprctl,
+                    config,
+                    opts,
+                    seen,
+                    &mut report,
+                ));
             }
             Step::MoveWorkspace {
                 workspace,
@@ -371,15 +388,21 @@ fn sweep(
             if seen.contains(&window.address) {
                 continue;
             }
-            // Prefer a saved window of the same class that already sits where
-            // this one is: that pairing needs no correction.
-            let Some(index) = pick_match(&pending, &window) else {
+            let Some((index, basis)) = crate::matching::best(&pending, &window) else {
                 continue;
             };
             let saved = pending.remove(index);
             seen.insert(window.address.clone());
             if let Some(i) = index_of.get(&(saved as *const SessionClient)) {
                 paired.insert(*i, window.address.clone());
+            }
+            let note = format!("paired {} → {} ({basis})", saved.class, window.address);
+            log(note.clone());
+            if basis.tied > 0 {
+                report.guessed += 1;
+            }
+            if opts.verbose {
+                report.details.push(note);
             }
 
             if !needs_placement(saved, &window) {
@@ -415,40 +438,6 @@ fn sweep(
 
     report.unmatched = pending.len();
     paired
-}
-
-/// Index into `pending` of the best saved entry for `window`.
-///
-/// Matching is by window class, preferring an entry that is already on this
-/// window's workspace. Failing that, the class each window announced when it
-/// first mapped is tried: applications that rename themselves afterwards --
-/// and some XWayland windows -- would otherwise never be paired, and would
-/// be reported as never having appeared while sitting on screen.
-fn pick_match(pending: &[&SessionClient], window: &crate::hyprctl::HyprClient) -> Option<usize> {
-    let by_class = |saved: &SessionClient| saved.class == window.class;
-    let by_initial = |saved: &SessionClient| {
-        !window.initial_class.is_empty()
-            && (saved.initial_class == window.initial_class
-                || saved.class == window.initial_class
-                || (!saved.initial_class.is_empty() && saved.initial_class == window.class))
-    };
-
-    for matches in [&by_class as &dyn Fn(&SessionClient) -> bool, &by_initial] {
-        let mut fallback = None;
-        for (i, saved) in pending.iter().enumerate() {
-            if !matches(saved) {
-                continue;
-            }
-            if saved.workspace.same(&window.workspace) {
-                return Some(i);
-            }
-            fallback.get_or_insert(i);
-        }
-        if fallback.is_some() {
-            return fallback;
-        }
-    }
-    None
 }
 
 /// Whether a window that arrived on its own still needs correcting.
@@ -685,6 +674,7 @@ mod tests {
             class: class.to_string(),
             initial_class: class.to_string(),
             title: String::new(),
+            initial_title: String::new(),
             workspace: WorkspaceRef::new(ws.0, ws.1),
             monitor: 0,
             at: [10, 20],
@@ -1339,6 +1329,16 @@ profile_workspaces = { "Profile 1" = "3" }
     }
 
     // ── matching ──
+    //
+    // The sweep's original pairing rules, kept as pins on the shared matcher
+    // that replaced them; its own table lives in `matching`.
+
+    fn pick_match(
+        pending: &[&SessionClient],
+        window: &crate::hyprctl::HyprClient,
+    ) -> Option<usize> {
+        crate::matching::best(pending, window).map(|(i, _)| i)
+    }
 
     #[test]
     fn match_prefers_the_window_already_in_place() {

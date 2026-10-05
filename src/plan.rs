@@ -16,6 +16,7 @@ use crate::config::Config;
 use crate::config::MissingMonitor;
 use crate::hyprctl::{HyprClient, HyprMonitor};
 use crate::lua::{lua_long_str, lua_str};
+use crate::matching;
 use crate::provider::ProviderSet;
 use crate::restore::{
     exec_call, grouped_sets, launch_command, workspace_monitors, workspace_move_call,
@@ -31,8 +32,13 @@ use std::collections::{BTreeMap, HashMap};
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Step {
-    /// `--missing-only`: this saved window's class is already on screen.
-    AlreadyOpen { client: usize, class: String },
+    /// `--missing-only`: this saved window is already on screen, as the
+    /// window at `address`.
+    AlreadyOpen {
+        client: usize,
+        class: String,
+        address: String,
+    },
     /// Launch a saved window's program, with rules that place it as it maps.
     Spawn {
         client: usize,
@@ -148,31 +154,35 @@ pub fn plan(
             .then(a.at[0].cmp(&b.at[0]))
     });
 
-    // What is already on screen, by class, so a merge can tell "this window
-    // is back" from "this window is still missing".
-    let mut already: HashMap<&str, usize> = HashMap::new();
-    if opts.missing_only {
-        for window in live {
-            *already.entry(window.class.as_str()).or_default() += 1;
-        }
-    }
+    // `--missing-only`: which saved windows are already on screen, paired
+    // the way the sweep pairs arrivals. A terminal open on workspace 2 is the
+    // one saved there, so it is the one saved on workspace 1 that launches.
+    let open: HashMap<usize, &str> = if opts.missing_only {
+        let saved: Vec<&SessionClient> = session.clients.iter().collect();
+        let windows: Vec<&HyprClient> = live.iter().collect();
+        matching::pair_all(&saved, &windows)
+            .into_iter()
+            .zip(live)
+            .filter_map(|(pair, window)| pair.map(|(i, _)| (i, window.address.as_str())))
+            .collect()
+    } else {
+        HashMap::new()
+    };
 
     let mut previous_tiled: Option<String> = None;
     for index in order {
         let client: &SessionClient = &session.clients[index];
-        if !client.launch.spawn {
+        if let Some(address) = open.get(&index) {
+            already_open += 1;
+            steps.push(Step::AlreadyOpen {
+                client: index,
+                class: client.class.clone(),
+                address: address.to_string(),
+            });
             continue;
         }
-        if let Some(count) = already.get_mut(client.class.as_str()) {
-            if *count > 0 {
-                *count -= 1;
-                already_open += 1;
-                steps.push(Step::AlreadyOpen {
-                    client: index,
-                    class: client.class.clone(),
-                });
-                continue;
-            }
+        if !client.launch.spawn {
+            continue;
         }
         let workspace = client.workspace.selector();
         let tiled = !client.floating;
@@ -215,8 +225,12 @@ pub fn plan(
         });
     }
 
+    // Everything not already on screen: windows launched above, and those
+    // their programs reopen on their own.
     steps.push(Step::Sweep {
-        expect: (0..session.clients.len()).collect(),
+        expect: (0..session.clients.len())
+            .filter(|i| !open.contains_key(i))
+            .collect(),
     });
 
     // After the windows exist: Hyprland has no workspace to move until
@@ -469,6 +483,7 @@ mod tests {
             class: class.to_string(),
             initial_class: class.to_string(),
             title: String::new(),
+            initial_title: String::new(),
             workspace: WorkspaceRef::new(ws.0, ws.1),
             monitor: 0,
             at: [0, 0],
@@ -587,6 +602,45 @@ mod tests {
         assert_eq!(
             spawned(&p).iter().map(|s| s.0.as_str()).collect::<Vec<_>>(),
             vec!["foot", "code"]
+        );
+    }
+
+    #[test]
+    fn missing_only_treats_the_open_window_as_the_one_saved_where_it_is() {
+        let s = session(vec![
+            saved("foot", (1, "1"), 0),
+            saved("foot", (2, "2"), 0),
+            saved("code", (2, "2"), 500),
+        ]);
+        let opts = RestoreOptions {
+            missing_only: true,
+            ..Default::default()
+        };
+        let p = plan(&s, &[live("foot", (2, "2"))], None, &config(), &opts, false);
+        assert!(p.steps.contains(&Step::AlreadyOpen {
+            client: 1,
+            class: "foot".into(),
+            address: "0xfoot".into()
+        }));
+        let launched: Vec<&str> = p
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Spawn {
+                    workspace, class, ..
+                } if class == "foot" => Some(workspace.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            launched,
+            vec!["1"],
+            "the foot saved on 1 is the missing one"
+        );
+        assert!(
+            p.steps.contains(&Step::Sweep { expect: vec![0, 2] }),
+            "an open window is not waited for: {:?}",
+            p.steps
         );
     }
 

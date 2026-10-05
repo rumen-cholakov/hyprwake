@@ -446,6 +446,7 @@ mod tests {
             class: class.to_string(),
             initial_class: class.to_string(),
             title: String::new(),
+            initial_title: String::new(),
             workspace: WorkspaceRef::new(1, "1"),
             monitor: 0,
             at: [0, 0],

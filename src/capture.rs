@@ -89,9 +89,17 @@ pub fn capture_session(
             fullscreen: raw.fullscreen,
             focus_history_id: raw.focus_history_id,
             group: group_ids.get(&raw.address).copied(),
-            // Populated in the ranked-matching phase; reserved here so the
-            // schema bumps once for the whole release.
-            identity: Identity::default(),
+            // Recorded so a support report can say what each window was;
+            // matching does not use them. On real windows they are the same
+            // for every window of a class, so they could not separate
+            // candidates (see `matching`). The desktop file and profile stay
+            // unset: neither can be read per window without guessing.
+            identity: Identity {
+                executable: process.exe(raw.pid),
+                initial_title: (!raw.initial_title.is_empty()).then(|| raw.initial_title.clone()),
+                provider: Some(resolution.key.to_string()),
+                ..Identity::default()
+            },
             launch: LaunchInfo {
                 argv,
                 spawn,
@@ -432,6 +440,7 @@ mod tests {
             class: class.to_string(),
             initial_class: class.to_string(),
             title: "t".to_string(),
+            initial_title: String::new(),
             workspace: WorkspaceRef::new(1, "1"),
             monitor: 0,
             at: [0, 0],

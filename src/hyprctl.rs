@@ -14,6 +14,9 @@ pub struct HyprClient {
     pub initial_class: String,
     #[serde(default)]
     pub title: String,
+    /// The title the window had when it first mapped.
+    #[serde(default, rename = "initialTitle")]
+    pub initial_title: String,
     pub workspace: WorkspaceRef,
     #[serde(default)]
     pub monitor: i32,
@@ -268,6 +271,7 @@ mod tests {
             class: class.to_string(),
             initial_class: class.to_string(),
             title: String::new(),
+            initial_title: String::new(),
             workspace: WorkspaceRef::new(ws, ws.to_string()),
             monitor: 0,
             at: [0, 0],

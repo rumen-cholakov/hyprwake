@@ -19,6 +19,9 @@ pub trait ProcessInfoProvider {
     /// `/proc/<pid>/fd`. Some programs record their session identity in one
     /// of these paths.
     fn open_files(&self, pid: i32) -> Vec<String>;
+    /// The program file the process is running (`/proc/<pid>/exe`). Recorded
+    /// for diagnosis; never used to decide anything.
+    fn exe(&self, pid: i32) -> Option<PathBuf>;
 
     /// Breadth-first search of the process tree under `pid` for a process
     /// whose `comm` is in `names`.
@@ -99,6 +102,18 @@ impl ProcessInfoProvider for RealProcessInfo {
             .collect()
     }
 
+    /// The executable's path, even when it has been replaced on disk since
+    /// the process started: an upgraded program still reads back as itself,
+    /// with the kernel's `" (deleted)"` suffix removed.
+    fn exe(&self, pid: i32) -> Option<PathBuf> {
+        let path = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+        let text = path.to_string_lossy();
+        Some(match text.strip_suffix(" (deleted)") {
+            Some(stripped) => PathBuf::from(stripped),
+            None => path,
+        })
+    }
+
     fn children(&self, pid: i32) -> Vec<i32> {
         let mut out = Vec::new();
         let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
@@ -129,6 +144,7 @@ pub mod mock {
         pub comms: HashMap<i32, String>,
         pub children: HashMap<i32, Vec<i32>>,
         pub open_files: HashMap<i32, Vec<String>>,
+        pub exes: HashMap<i32, PathBuf>,
     }
 
     impl MockProcessInfo {
@@ -168,6 +184,9 @@ pub mod mock {
         }
         fn open_files(&self, pid: i32) -> Vec<String> {
             self.open_files.get(&pid).cloned().unwrap_or_default()
+        }
+        fn exe(&self, pid: i32) -> Option<PathBuf> {
+            self.exes.get(&pid).cloned()
         }
     }
 }
@@ -266,6 +285,15 @@ mod tests {
 
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    fn the_real_executable_is_read_and_a_replaced_one_still_named() {
+        let me = std::process::id() as i32;
+        let exe = RealProcessInfo.exe(me).unwrap();
+        assert_eq!(exe, std::env::current_exe().unwrap());
+        assert!(!exe.to_string_lossy().ends_with("(deleted)"));
+        assert_eq!(RealProcessInfo.exe(-1), None);
     }
 
     #[test]

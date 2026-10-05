@@ -147,8 +147,9 @@ pub struct SessionClient {
     /// can differ; this is what makes them findable again.
     #[serde(default)]
     pub initial_class: String,
-    /// Kept for the human reading `hyprwake list -v`; titles are set by the
-    /// running program and are never used for matching.
+    /// Set by the running program, so it changes and can never decide
+    /// whether a window matches. It only orders candidates that are equal on
+    /// everything else: see `matching`.
     #[serde(default)]
     pub title: String,
     pub workspace: WorkspaceRef,
@@ -169,10 +170,11 @@ pub struct SessionClient {
     /// Recorded but not reassembled on restore: see `restore::grouped_sets`.
     #[serde(default)]
     pub group: Option<u32>,
-    /// Signals for ranked matching on restore.
+    /// What else is known about the window, for diagnosis.
     ///
-    /// Every field is optional by design: a `None` that costs a scoring tier
-    /// is better than a wrong `Some` that wins one.
+    /// Every field is optional by design: a `None` is better than a wrong
+    /// `Some`. None of them takes part in matching today — within a class
+    /// they turned out to be identical on real windows.
     #[serde(default)]
     pub identity: Identity,
     pub launch: LaunchInfo,

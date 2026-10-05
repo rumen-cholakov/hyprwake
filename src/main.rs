@@ -372,6 +372,13 @@ fn cmd_restore(
                 if report.already_open > 0 {
                     println!("  {} window(s) were already open", report.already_open);
                 }
+                if report.guessed > 0 {
+                    println!(
+                        "  {} window(s) matched by saved order alone, among windows \
+                         nothing else told apart; `--verbose` names them",
+                        report.guessed
+                    );
+                }
                 if report.groups_unrestored > 0 {
                     println!(
                         "  {} group(s) came back as separate windows",
@@ -452,6 +459,12 @@ fn cmd_diff(name: Option<String>, config: &Config, dir: &Path) -> ExitCode {
         println!(
             "Unexpected: {} × {} on workspace {}",
             item.count, item.class, item.workspace
+        );
+    }
+    for item in &result.moved {
+        println!(
+            "Moved:      {} × {} from workspace {} to {}",
+            item.count, item.class, item.from, item.to
         );
     }
     ExitCode::SUCCESS
