@@ -76,7 +76,7 @@ impl Debouncer {
 
 // ── Run loops ──────────────────────────────────────────────────────────────
 
-fn event_socket_path() -> Option<PathBuf> {
+pub(crate) fn event_socket_path() -> Option<PathBuf> {
     let runtime = std::env::var("XDG_RUNTIME_DIR").ok()?;
     let signature = std::env::var("HYPRLAND_INSTANCE_SIGNATURE").ok()?;
     Some(

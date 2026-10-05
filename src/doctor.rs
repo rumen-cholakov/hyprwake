@@ -58,6 +58,33 @@ pub fn supports_lua_dispatchers(version: &str) -> bool {
     }
 }
 
+/// Whether `watch` has an event stream to listen to.
+///
+/// Only a connection proves it. A stale signature, a compositor that has
+/// gone away or the wrong `XDG_RUNTIME_DIR` all leave the environment looking
+/// fine, and this check used to say "reachable" on the strength of a variable
+/// being set.
+fn event_socket_check(path: Option<std::path::PathBuf>) -> Check {
+    let Some(path) = path else {
+        return Check::new(
+            "event socket",
+            Status::Warn,
+            "HYPRLAND_INSTANCE_SIGNATURE or XDG_RUNTIME_DIR unset; use `daemon` instead of `watch`",
+        );
+    };
+    match std::os::unix::net::UnixStream::connect(&path) {
+        Ok(_) => Check::new("event socket", Status::Ok, "reachable; `watch` can run"),
+        Err(e) => Check::new(
+            "event socket",
+            Status::Warn,
+            format!(
+                "{} refused a connection ({e}); `watch` cannot run here, `daemon` polls instead",
+                path.display()
+            ),
+        ),
+    }
+}
+
 /// What the snapshot on disk says it is, and what wrote it.
 ///
 /// An older snapshot is fine — it is migrated on load — so this reports
@@ -104,16 +131,7 @@ pub fn run(
         Err(e) => checks.push(Check::new("hyprland", Status::Fail, format!("{e}"))),
     }
 
-    let has_signature = std::env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok();
-    checks.push(if has_signature {
-        Check::new("event socket", Status::Ok, "reachable; `watch` can run")
-    } else {
-        Check::new(
-            "event socket",
-            Status::Warn,
-            "HYPRLAND_INSTANCE_SIGNATURE unset; use `daemon` instead of `watch`",
-        )
-    });
+    checks.push(event_socket_check(crate::autosave::event_socket_path()));
 
     // ── launching ──
     checks.push(if config.use_uwsm() {
@@ -328,6 +346,31 @@ mod tests {
     fn version_gate_tolerates_suffixes() {
         assert!(supports_lua_dispatchers("v0.56.2"));
         assert!(supports_lua_dispatchers("0.56-dirty"));
+    }
+
+    #[test]
+    fn the_event_socket_is_only_reachable_if_something_accepts() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".socket2.sock");
+
+        let absent = event_socket_check(Some(path.clone()));
+        assert_eq!(
+            absent.status,
+            Status::Warn,
+            "a set variable is not a socket"
+        );
+        assert!(absent.detail.contains("refused"), "{}", absent.detail);
+
+        let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let present = event_socket_check(Some(path));
+        assert_eq!(present.status, Status::Ok, "{}", present.detail);
+    }
+
+    #[test]
+    fn no_signature_means_no_event_socket() {
+        let check = event_socket_check(None);
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("daemon"));
     }
 
     #[test]

@@ -39,6 +39,12 @@
   does not exist, suffix included. A build directory or a git worktree removed
   under an open shell was enough. Such a directory now counts as unknown and
   the terminal reopens where it was started, or at home.
+- **`doctor` no longer calls the event socket reachable without trying it.**
+  It reported "reachable; `watch` can run" whenever
+  `HYPRLAND_INSTANCE_SIGNATURE` was set, so a stale signature, a compositor
+  that had gone away or the wrong `XDG_RUNTIME_DIR` all passed. It now
+  connects, and names the socket when that fails. Found by the agent-stack
+  nested-compositor tests.
 - **Running the test suite no longer stops your watcher.** A service test
   installed a unit into a temporary directory and then uninstalled it — which
   ran `systemctl --user disable --now hyprwake-watch.service` against the real
