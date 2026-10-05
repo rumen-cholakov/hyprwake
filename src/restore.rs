@@ -185,6 +185,7 @@ fn execute(
     let mut last_tiled: Option<String> = None;
     let mut initial = Some(initial);
     let mut paired: HashMap<usize, String> = HashMap::new();
+    let mut explained_config_manager = false;
 
     for step in &plan.steps {
         match step {
@@ -233,6 +234,18 @@ fn execute(
                         report.failed += 1;
                         report.details.push(format!("FAIL spawn {class}: {e}"));
                         log(format!("spawn failed for {class}: {e}"));
+                        // Every restore call is a Lua dispatcher. A Hyprland
+                        // on a legacy hyprland.conf rejects all of them, and a
+                        // failure per window hides that there is one cause.
+                        if !explained_config_manager && e.to_string().contains("Invalid dispatcher")
+                        {
+                            explained_config_manager = true;
+                            let msg = "this Hyprland is not running the Lua config manager, which \
+                                       every restore call needs: Hyprland 0.55 or later with a \
+                                       hyprland.lua config. Nothing launched is at fault.";
+                            report.details.push(msg.to_string());
+                            log(msg);
+                        }
                     }
                 }
                 sleep(Duration::from_millis(config.general.spawn_stagger_ms));
@@ -1215,6 +1228,22 @@ profile_workspaces = { "Profile 1" = "3" }
             !calls.iter().any(|c| c.contains("x = 2816")),
             "the saved coordinates would be off the panel"
         );
+    }
+
+    #[test]
+    fn a_legacy_config_manager_is_named_once_not_blamed_on_each_window() {
+        let mut hypr = MockHyprctl::new(vec![vec![]]);
+        hypr.reject = Some("Invalid dispatcher".to_string());
+        let session = session_of(vec![saved("foot", (1, "1")), saved("code", (2, "2"))]);
+        let report =
+            restore_session(&session, &hypr, &fast_config(), &RestoreOptions::default()).unwrap();
+        assert_eq!(report.failed, 2);
+        let explained = report
+            .details
+            .iter()
+            .filter(|d| d.contains("Lua config manager"))
+            .count();
+        assert_eq!(explained, 1, "{:?}", report.details);
     }
 
     // ── command building ──

@@ -93,6 +93,11 @@ from an earlier README, replace it with the current one (see Security).
   that had gone away or the wrong `XDG_RUNTIME_DIR` all passed. It now
   connects, and names the socket when that fails. Found by the agent-stack
   nested-compositor tests.
+- **A Hyprland on a legacy `hyprland.conf` is named as the cause.** Every
+  restore call is a Lua dispatcher, and the old config manager rejects them
+  all as "Invalid dispatcher" — one baffling failure per window. The restore
+  report now says once that the compositor is not running the Lua config
+  manager, which is what needs fixing.
 - **A nested Hyprland is never saved.** A nested compositor shows on the
   host as an `aquamarine` window (Hyprland's backend library); a watcher save
   while one was open would have relaunched a compositor inside the session at
