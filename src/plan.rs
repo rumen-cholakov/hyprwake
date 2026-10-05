@@ -13,6 +13,7 @@
 
 use crate::browsers::profile_argv;
 use crate::config::Config;
+use crate::config::MissingMonitor;
 use crate::hyprctl::{HyprClient, HyprMonitor};
 use crate::lua::{lua_long_str, lua_str};
 use crate::provider::ProviderSet;
@@ -21,9 +22,10 @@ use crate::restore::{
     RestoreOptions, RestoreReport,
 };
 use crate::session::{Session, SessionClient};
+use crate::topology::{self, Placement};
 use crate::workspace::WorkspaceRef;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// One thing a restore does. Serialised for `restore --dry-run --json`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -56,11 +58,14 @@ pub enum Step {
     /// Pair windows that arrive with these saved entries, and place the ones
     /// the launch rules could not reach.
     Sweep { expect: Vec<usize> },
-    /// Send a workspace back to the monitor it was on.
+    /// Send a workspace back to the monitor it was on — or, when that
+    /// monitor is gone and config says so, to another one.
     MoveWorkspace {
         workspace: String,
         monitor: String,
         call: String,
+        /// Why this monitor, whenever it is not simply the same connector.
+        reason: Option<String>,
     },
     /// The monitor a workspace was on is not attached; leave it be.
     MonitorMissing { workspace: String, monitor: String },
@@ -75,10 +80,19 @@ pub enum Step {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RestorePlan {
     pub steps: Vec<Step>,
+    /// Floating windows carried to a different monitor: the position and
+    /// size to restore them at instead of the saved ones.
+    pub geometry: BTreeMap<usize, Geometry>,
     /// Programs this restore launches: windows plus browser profiles.
     pub launches: usize,
     pub already_open: usize,
     pub groups_unrestored: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Geometry {
+    pub at: [i32; 2],
+    pub size: [i32; 2],
 }
 
 /// Decide the restore.
@@ -97,7 +111,30 @@ pub fn plan(
     let mut steps = Vec::new();
     let mut already_open = 0;
 
+    // Where each saved monitor's workspaces go. Decided first: a floating
+    // window carried to another monitor launches with its new geometry.
+    let by_identity =
+        opts.saved_topology || config.monitors.missing != MissingMonitor::PreserveNumbers;
     let wanted = workspace_monitors(session);
+    let placements: BTreeMap<&str, Placement<'_>> = match monitors {
+        Some(live_monitors) => wanted
+            .values()
+            .chain(session.monitors.iter().map(|m| &m.name))
+            .map(|saved| {
+                let record = session.monitors.iter().find(|m| &m.name == saved);
+                (
+                    saved.as_str(),
+                    topology::place(saved, record, live_monitors, &config.monitors, by_identity),
+                )
+            })
+            .collect(),
+        None => BTreeMap::new(),
+    };
+    let geometry = if by_identity {
+        carried_geometry(session, &wanted, &placements)
+    } else {
+        BTreeMap::new()
+    };
 
     // Tiled windows first, in their old reading order, so the layout
     // re-tiles roughly as it was; floating windows are positioned explicitly.
@@ -140,11 +177,12 @@ pub fn plan(
         let workspace = client.workspace.selector();
         let tiled = !client.floating;
         let command = launch_command(&client.launch.argv, use_uwsm);
+        let placed = with_geometry(client, geometry.get(&index));
         steps.push(Step::Spawn {
             client: index,
             class: client.class.clone(),
             wait_for_previous: tiled && previous_tiled.as_deref() == Some(workspace.as_str()),
-            call: exec_call(&command, &client.workspace, client),
+            call: exec_call(&command, &client.workspace, &placed),
             command,
             workspace: workspace.clone(),
             tiled,
@@ -184,19 +222,22 @@ pub fn plan(
     // After the windows exist: Hyprland has no workspace to move until
     // something is on it. A session saved docked must still restore on the
     // road, so a missing monitor is noted and skipped.
-    if let Some(attached) = monitors {
-        for (workspace, monitor) in &wanted {
-            if attached.iter().any(|m| &m.name == monitor) {
-                steps.push(Step::MoveWorkspace {
-                    call: workspace_move_call(workspace, monitor),
+    if monitors.is_some() {
+        for (workspace, saved) in &wanted {
+            match placements
+                .get(saved.as_str())
+                .and_then(|p| p.live().map(|l| (p, l)))
+            {
+                Some((placement, live)) => steps.push(Step::MoveWorkspace {
+                    call: workspace_move_call(workspace, &live.name),
                     workspace: workspace.clone(),
-                    monitor: monitor.clone(),
-                });
-            } else {
-                steps.push(Step::MonitorMissing {
+                    monitor: live.name.clone(),
+                    reason: placement.reason(saved),
+                }),
+                None => steps.push(Step::MonitorMissing {
                     workspace: workspace.clone(),
-                    monitor: monitor.clone(),
-                });
+                    monitor: saved.clone(),
+                }),
             }
         }
     }
@@ -222,8 +263,19 @@ pub fn plan(
         if workspace.is_special() {
             continue;
         }
+        // By connector, as before 0.2.0 — unless monitors are being matched by
+        // identity, in which case focus follows the monitor the workspaces
+        // went to, and a monitor that went nowhere is not focused at all.
+        let name = if by_identity {
+            match placements.get(monitor.name.as_str()).and_then(|p| p.live()) {
+                Some(live) => live.name.clone(),
+                None => continue,
+            }
+        } else {
+            monitor.name.clone()
+        };
         steps.push(Step::Focus {
-            call: format!("hl.dsp.focus({{ monitor = {} }})", lua_str(&monitor.name)),
+            call: format!("hl.dsp.focus({{ monitor = {} }})", lua_str(&name)),
         });
         steps.push(Step::Focus {
             call: format!(
@@ -243,10 +295,57 @@ pub fn plan(
         .count();
     RestorePlan {
         steps,
+        geometry,
         launches,
         already_open,
         groups_unrestored: groups.len(),
     }
+}
+
+/// New geometry for floating windows whose workspace is going to a monitor
+/// that is not where it was saved.
+///
+/// Only for snapshots that recorded where each monitor sat: a 0.1.x snapshot
+/// has no monitor positions, and fitting from a guessed origin would move
+/// windows *off* the screen it is meant to keep them on.
+fn carried_geometry(
+    session: &Session,
+    wanted: &BTreeMap<String, String>,
+    placements: &BTreeMap<&str, Placement<'_>>,
+) -> BTreeMap<usize, Geometry> {
+    let mut out = BTreeMap::new();
+    if session.loaded_from.unwrap_or(session.schema_version) < 2 {
+        return out;
+    }
+    for (index, client) in session.clients.iter().enumerate() {
+        if !client.floating || client.workspace.is_special() {
+            continue;
+        }
+        let Some(saved) = wanted.get(&client.workspace.selector()) else {
+            continue;
+        };
+        let (Some(from), Some(to)) = (
+            session.monitors.iter().find(|m| &m.name == saved),
+            placements.get(saved.as_str()).and_then(|p| p.live()),
+        ) else {
+            continue;
+        };
+        let (at, size) = topology::fit(client.at, client.size, from, to);
+        if at != client.at || size != client.size {
+            out.insert(index, Geometry { at, size });
+        }
+    }
+    out
+}
+
+/// `client` with its geometry replaced, when the plan moves it.
+pub fn with_geometry(client: &SessionClient, geometry: Option<&Geometry>) -> SessionClient {
+    let mut placed = client.clone();
+    if let Some(g) = geometry {
+        placed.at = g.at;
+        placed.size = g.size;
+    }
+    placed
 }
 
 impl Step {
@@ -304,7 +403,18 @@ pub fn render(plan: &RestorePlan, opts: &RestoreOptions) -> RestoreReport {
                 ));
                 out.push(format!("  hyprctl dispatch {call}"));
             }
-            Step::MoveWorkspace { call, .. } | Step::Focus { call } => {
+            Step::MoveWorkspace {
+                workspace,
+                monitor,
+                call,
+                reason,
+            } => {
+                if let Some(reason) = reason {
+                    out.push(format!("workspace {workspace} → {monitor}: {reason}"));
+                }
+                out.push(format!("  hyprctl dispatch {call}"));
+            }
+            Step::Focus { call } => {
                 out.push(format!("  hyprctl dispatch {call}"));
             }
             Step::MonitorMissing { workspace, monitor } => {
@@ -586,6 +696,200 @@ mod tests {
             ]
         );
         assert_eq!(report.spawned, 1);
+    }
+
+    // ── monitor topology, driven by recorded `hyprctl monitors -j` ──
+
+    use crate::config::{MissingMonitor, MonitorConfig};
+    use crate::topology::tests::{monitors, saved as saved_monitor};
+
+    /// Saved docked: a terminal on the panel's workspace 1, and on the Dell's
+    /// workspace 3 an editor and a floating notes window on its right half.
+    fn docked_session() -> Session {
+        let docked = monitors("docked");
+        let mut notes = saved("obsidian", (3, "3"), 1536 + 1280);
+        notes.monitor = "DP-1".into();
+        notes.floating = true;
+        notes.at = [1536 + 1280, 100];
+        notes.size = [1200, 800];
+        let mut code = saved("code", (3, "3"), 1536);
+        code.monitor = "DP-1".into();
+        code.focus_history_id = 0;
+        let mut s = session(vec![saved("foot", (1, "1"), 0), code, notes]);
+        s.monitors = docked.iter().map(saved_monitor).collect();
+        s
+    }
+
+    fn with_missing(missing: MissingMonitor) -> Config {
+        let mut c = config();
+        c.monitors = MonitorConfig {
+            missing,
+            ..Default::default()
+        };
+        c
+    }
+
+    fn moves(p: &RestorePlan) -> Vec<(String, String, Option<String>)> {
+        p.steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::MoveWorkspace {
+                    workspace,
+                    monitor,
+                    reason,
+                    ..
+                } => Some((workspace.clone(), monitor.clone(), reason.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn spawn_call<'a>(p: &'a RestorePlan, class: &str) -> &'a str {
+        p.steps
+            .iter()
+            .find_map(|s| match s {
+                Step::Spawn { class: c, call, .. } if c == class => Some(call.as_str()),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn docked_to_undocked_by_default_is_what_0_1_did() {
+        let laptop = monitors("laptop");
+        let p = plan(
+            &docked_session(),
+            &[],
+            Some(&laptop),
+            &config(),
+            &RestoreOptions::default(),
+            false,
+        );
+        assert_eq!(moves(&p), vec![("1".into(), "eDP-1".into(), None)]);
+        assert!(p.steps.contains(&Step::MonitorMissing {
+            workspace: "3".into(),
+            monitor: "DP-1".into()
+        }));
+        assert!(p.geometry.is_empty(), "no fitting unless asked for");
+        assert!(spawn_call(&p, "obsidian").contains("move = {2816, 100}"));
+    }
+
+    #[test]
+    fn docked_to_undocked_with_remap_moves_and_fits_the_lost_monitor() {
+        let laptop = monitors("laptop");
+        let p = plan(
+            &docked_session(),
+            &[],
+            Some(&laptop),
+            &with_missing(MissingMonitor::Remap),
+            &RestoreOptions::default(),
+            false,
+        );
+        let m = moves(&p);
+        assert_eq!(m[1].0, "3");
+        assert_eq!(m[1].1, "eDP-1");
+        assert!(m[1].2.as_deref().unwrap().contains("nearest"), "{m:?}");
+        // The notes window was on the Dell's right half; it lands on the
+        // panel's right half, inside the panel.
+        assert_eq!(
+            p.geometry.get(&2),
+            Some(&Geometry {
+                at: [768, 60],
+                size: [720, 480]
+            })
+        );
+        assert!(spawn_call(&p, "obsidian").contains("move = {768, 60}, size = {720, 480}"));
+        // Focus follows the workspaces: the Dell's focus goes to the panel.
+        assert!(p
+            .steps
+            .iter()
+            .any(|s| matches!(s, Step::Focus { call } if call.contains("workspace = '3'"))));
+        assert!(!p
+            .steps
+            .iter()
+            .any(|s| matches!(s, Step::Focus { call } if call.contains("'DP-1'"))));
+    }
+
+    #[test]
+    fn docked_to_undocked_with_collapse_says_so() {
+        let laptop = monitors("laptop");
+        let p = plan(
+            &docked_session(),
+            &[],
+            Some(&laptop),
+            &with_missing(MissingMonitor::Collapse),
+            &RestoreOptions::default(),
+            false,
+        );
+        let m = moves(&p);
+        assert_eq!(m[1].1, "eDP-1");
+        assert!(m[1].2.as_deref().unwrap().contains("collapsed"), "{m:?}");
+    }
+
+    #[test]
+    fn undocked_to_docked_keeps_everything_where_it_was() {
+        let laptop = monitors("laptop");
+        let docked = monitors("docked");
+        let mut s = session(vec![saved("foot", (1, "1"), 0), saved("code", (2, "2"), 0)]);
+        s.monitors = laptop.iter().map(saved_monitor).collect();
+        for missing in [
+            MissingMonitor::PreserveNumbers,
+            MissingMonitor::Remap,
+            MissingMonitor::Collapse,
+        ] {
+            let p = plan(
+                &s,
+                &[],
+                Some(&docked),
+                &with_missing(missing),
+                &RestoreOptions::default(),
+                false,
+            );
+            let m = moves(&p);
+            assert!(
+                m.iter().all(|(_, monitor, _)| monitor == "eDP-1"),
+                "{missing:?}: {m:?}"
+            );
+            assert!(!p
+                .steps
+                .iter()
+                .any(|s| matches!(s, Step::MonitorMissing { .. })));
+        }
+    }
+
+    #[test]
+    fn the_same_display_on_another_port_is_followed_and_its_windows_shifted() {
+        let elsewhere = monitors("docked-elsewhere");
+        let p = plan(
+            &docked_session(),
+            &[],
+            Some(&elsewhere),
+            &with_missing(MissingMonitor::Remap),
+            &RestoreOptions::default(),
+            false,
+        );
+        let m = moves(&p);
+        let dell = m.iter().find(|(ws, _, _)| ws == "3").unwrap();
+        assert_eq!(dell.1, "DP-2");
+        assert!(dell.2.as_deref().unwrap().contains("serial"), "{m:?}");
+        // The Dell is now left of the panel, at x=0: same place on it.
+        assert_eq!(p.geometry.get(&2).unwrap().at, [1280, 100]);
+    }
+
+    #[test]
+    fn a_0_1_snapshot_is_never_fitted() {
+        let laptop = monitors("laptop");
+        let mut s = docked_session();
+        s.loaded_from = Some(1);
+        let p = plan(
+            &s,
+            &[],
+            Some(&laptop),
+            &with_missing(MissingMonitor::Remap),
+            &RestoreOptions::default(),
+            false,
+        );
+        assert!(p.geometry.is_empty());
     }
 
     #[test]

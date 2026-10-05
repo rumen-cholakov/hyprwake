@@ -1,0 +1,130 @@
+[
+    {
+        "id": 0,
+        "name": "eDP-1",
+        "description": "Sharp Corporation 0x149A",
+        "make": "Sharp Corporation",
+        "model": "0x149A",
+        "serial": "",
+        "width": 1920,
+        "height": 1080,
+        "physicalWidth": 340,
+        "physicalHeight": 190,
+        "refreshRate": 59.999,
+        "x": 0,
+        "y": 0,
+        "activeWorkspace": {
+            "id": 5,
+            "name": "5"
+        },
+        "specialWorkspace": {
+            "id": 0,
+            "name": ""
+        },
+        "reserved": [
+            0,
+            26,
+            0,
+            0
+        ],
+        "scale": 1.25,
+        "transform": 0,
+        "focused": true,
+        "dpmsStatus": false,
+        "vrr": false,
+        "solitary": "0",
+        "solitaryBlockedBy": [
+            "LOCK",
+            "WINDOWED",
+            "CANDIDATE"
+        ],
+        "activelyTearing": false,
+        "tearingBlockedBy": [
+            "NOT_TORN",
+            "USER",
+            "CANDIDATE",
+            "HW_CURSOR"
+        ],
+        "directScanoutTo": "0",
+        "directScanoutBlockedBy": [
+            "USER",
+            "CANDIDATE"
+        ],
+        "disabled": false,
+        "currentFormat": "XRGB8888",
+        "mirrorOf": "none",
+        "availableModes": [
+            "1920x1080@60.00Hz"
+        ],
+        "colorManagementPreset": "srgb",
+        "sdrBrightness": 1,
+        "sdrSaturation": 1,
+        "sdrMinLuminance": 0.2,
+        "sdrMaxLuminance": 80,
+        "hardwareCursorsInUse": true
+    },
+    {
+        "id": 1,
+        "name": "DP-1",
+        "description": "LG Electronics LG ULTRAFINE",
+        "make": "LG Electronics",
+        "model": "LG ULTRAFINE",
+        "serial": "",
+        "width": 2560,
+        "height": 1440,
+        "physicalWidth": 600,
+        "physicalHeight": 340,
+        "refreshRate": 59.999,
+        "x": 1536,
+        "y": 0,
+        "activeWorkspace": {
+            "id": 3,
+            "name": "3"
+        },
+        "specialWorkspace": {
+            "id": 0,
+            "name": ""
+        },
+        "reserved": [
+            0,
+            26,
+            0,
+            0
+        ],
+        "scale": 1.0,
+        "transform": 0,
+        "focused": false,
+        "dpmsStatus": false,
+        "vrr": false,
+        "solitary": "0",
+        "solitaryBlockedBy": [
+            "LOCK",
+            "WINDOWED",
+            "CANDIDATE"
+        ],
+        "activelyTearing": false,
+        "tearingBlockedBy": [
+            "NOT_TORN",
+            "USER",
+            "CANDIDATE",
+            "HW_CURSOR"
+        ],
+        "directScanoutTo": "0",
+        "directScanoutBlockedBy": [
+            "USER",
+            "CANDIDATE"
+        ],
+        "disabled": false,
+        "currentFormat": "XRGB8888",
+        "mirrorOf": "none",
+        "availableModes": [
+            "2560x1440@60.00Hz"
+        ],
+        "colorManagementPreset": "srgb",
+        "sdrBrightness": 1,
+        "sdrSaturation": 1,
+        "sdrMinLuminance": 0.2,
+        "sdrMaxLuminance": 80,
+        "hardwareCursorsInUse": true
+    }
+]

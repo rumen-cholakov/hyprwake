@@ -54,6 +54,18 @@
   scripts and bug reports. A dry run and a live restore are now two readings
   of one plan, rather than two code paths that each claimed to describe the
   same restore; a recorded fixture pins every dispatch a live restore makes.
+- **Monitor topology.** `[monitors] missing = "remap"` sends a missing
+  monitor's workspaces to the attached monitor most like it and scales its
+  floating windows into it; `"collapse"` sends them to the focused monitor;
+  `[monitors.remap]` names a replacement outright. Under either strategy a
+  display is recognised by serial, then make and model, then connector, so the
+  same monitor on another port keeps its workspaces and a different one on a
+  familiar port does not inherit them. `restore --topology saved` refuses
+  unless every saved monitor is attached, and rebuilds that layout. The
+  default, `"preserve-numbers"`, is exactly the 0.1.x behaviour. The report
+  says why any workspace went somewhere other than its own connector. Checked
+  against recorded `hyprctl monitors -j` fixtures; not yet through the
+  multi-monitor release gate, which is why none of it is on by default.
 - **opencode conversations come back.** opencode is now reopened inside its
   terminal and resumed with `--session <id>`, looked up in its own database by
   directory. Subagent runs, which opencode records as child sessions in the

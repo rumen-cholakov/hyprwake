@@ -29,6 +29,13 @@ pub enum RestoreError {
     Hyprctl(#[from] HyprctlError),
     #[error("desktop already has {0} windows open; refusing to restore over it (use --force)")]
     DesktopPopulated(usize),
+    #[error(
+        "--topology saved restores only onto the monitors it was saved on, and {0} \
+         not attached"
+    )]
+    TopologyAbsent(String),
+    #[error("--topology saved needs to see the attached monitors, and they could not be read")]
+    TopologyUnknown,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -40,6 +47,9 @@ pub struct RestoreOptions {
     /// Launch only what is not already open, and leave existing windows
     /// where they are.
     pub missing_only: bool,
+    /// `--topology saved`: refuse unless every saved monitor is attached,
+    /// and match them by identity rather than by connector.
+    pub saved_topology: bool,
 }
 
 #[derive(Debug, Default)]
@@ -126,6 +136,19 @@ fn plan_against(
             None
         }
     };
+    if opts.saved_topology {
+        let Some(live) = &monitors else {
+            return Err(RestoreError::TopologyUnknown);
+        };
+        let absent = crate::topology::absent(&session.monitors, live);
+        if !absent.is_empty() {
+            let verb = if absent.len() == 1 { "is" } else { "are" };
+            return Err(RestoreError::TopologyAbsent(format!(
+                "{} {verb}",
+                absent.join(", ")
+            )));
+        }
+    }
     Ok(crate::plan::plan(
         session,
         initial,
@@ -226,23 +249,39 @@ fn execute(
             }
             Step::Sweep { expect } => {
                 let seen = initial.take().unwrap_or_default();
-                paired = sweep(session, expect, hyprctl, config, opts, seen, &mut report);
+                // Place windows where the plan put them, which is where they
+                // were saved unless their monitor changed.
+                let mut placed = session.clone();
+                for (index, geometry) in &plan.geometry {
+                    placed.clients[*index] =
+                        crate::plan::with_geometry(&session.clients[*index], Some(geometry));
+                }
+                paired = sweep(&placed, expect, hyprctl, config, opts, seen, &mut report);
             }
             Step::MoveWorkspace {
                 workspace,
                 monitor,
                 call,
-            } => match hyprctl.dispatch(call) {
-                Ok(()) => {
-                    report.monitors_placed += 1;
-                    if opts.verbose {
-                        report
-                            .details
-                            .push(format!("workspace {workspace} → {monitor}"));
-                    }
+                reason,
+            } => {
+                if let Some(reason) = reason {
+                    log(format!("workspace {workspace} → {monitor}: {reason}"));
                 }
-                Err(e) => log(format!("workspace {workspace} → {monitor} failed: {e}")),
-            },
+                match hyprctl.dispatch(call) {
+                    Ok(()) => {
+                        report.monitors_placed += 1;
+                        if opts.verbose {
+                            report.details.push(match reason {
+                                Some(reason) => {
+                                    format!("workspace {workspace} → {monitor}: {reason}")
+                                }
+                                None => format!("workspace {workspace} → {monitor}"),
+                            });
+                        }
+                    }
+                    Err(e) => log(format!("workspace {workspace} → {monitor} failed: {e}")),
+                }
+            }
             Step::MonitorMissing { workspace, monitor } => {
                 let msg = Step::monitor_missing_note(workspace, monitor);
                 log(msg.clone());
@@ -1089,6 +1128,93 @@ profile_workspaces = { "Profile 1" = "3" }
             );
         }
         assert_eq!(got, want, "golden cases added or removed");
+    }
+
+    // ── monitor topology through a whole restore ──
+
+    fn docked_session_for_restore() -> Session {
+        let docked = crate::topology::tests::monitors("docked");
+        let mut notes = saved("obsidian", (3, "3"));
+        notes.monitor = "DP-1".into();
+        notes.floating = true;
+        notes.at = [1536 + 1280, 100];
+        notes.size = [1200, 800];
+        notes.launch.spawn = false; // arrives on its own; the sweep places it
+        let mut s = session_of(vec![notes]);
+        s.monitors = docked.iter().map(crate::topology::tests::saved).collect();
+        s
+    }
+
+    #[test]
+    fn topology_saved_refuses_when_a_saved_monitor_is_gone() {
+        let mut hypr = MockHyprctl::new(vec![vec![]]);
+        hypr.monitors = crate::topology::tests::monitors("laptop");
+        let opts = RestoreOptions {
+            saved_topology: true,
+            ..Default::default()
+        };
+        let err = restore_session(&docked_session_for_restore(), &hypr, &fast_config(), &opts)
+            .unwrap_err();
+        assert!(
+            matches!(&err, RestoreError::TopologyAbsent(m) if m.contains("DP-1")),
+            "{err}"
+        );
+        assert!(hypr.calls().is_empty(), "nothing launched before refusing");
+    }
+
+    #[test]
+    fn topology_saved_follows_the_same_monitors_to_new_ports() {
+        let mut hypr = MockHyprctl::new(vec![vec![]]);
+        hypr.monitors = crate::topology::tests::monitors("docked-elsewhere");
+        let opts = RestoreOptions {
+            saved_topology: true,
+            dry_run: true,
+            ..Default::default()
+        };
+        let report =
+            restore_session(&docked_session_for_restore(), &hypr, &fast_config(), &opts).unwrap();
+        assert!(
+            report
+                .details
+                .iter()
+                .any(|d| d.contains("workspace 3 → DP-2") && d.contains("serial")),
+            "{:?}",
+            report.details
+        );
+    }
+
+    #[test]
+    fn the_sweep_places_a_carried_window_where_the_plan_fitted_it() {
+        let arrived = live("obsidian", (3, "3"), "0xc");
+        let mut hypr = MockHyprctl::new(vec![vec![], vec![arrived]]);
+        hypr.monitors = crate::topology::tests::monitors("laptop");
+        let mut cfg = fast_config();
+        cfg.general.sweep_timeout_secs = 1;
+        cfg.monitors.missing = crate::config::MissingMonitor::Remap;
+        restore_session(
+            &docked_session_for_restore(),
+            &hypr,
+            &cfg,
+            &RestoreOptions::default(),
+        )
+        .unwrap();
+        let calls = hypr.calls();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("resize({ x = 720, y = 480, window = 'address:0xc'")),
+            "{calls:#?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("move({ x = 768, y = 60, relative = false")),
+            "{calls:#?}"
+        );
+        assert!(
+            !calls.iter().any(|c| c.contains("x = 2816")),
+            "the saved coordinates would be off the panel"
+        );
     }
 
     // ── command building ──

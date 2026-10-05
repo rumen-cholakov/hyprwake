@@ -28,6 +28,36 @@ pub struct Config {
     /// the legacy tables above into one [`ProviderSet`](crate::provider::ProviderSet).
     #[serde(default)]
     pub providers: BTreeMap<String, crate::provider::ProviderEntry>,
+    #[serde(default)]
+    pub monitors: MonitorConfig,
+}
+
+/// Where workspaces go when the monitors attached now are not the ones they
+/// were saved on.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MonitorConfig {
+    /// What to do with a workspace whose monitor is not attached.
+    #[serde(default)]
+    pub missing: MissingMonitor,
+    /// Saved connector -> connector to use instead, when the saved one is not
+    /// attached. Applies whatever `missing` says.
+    #[serde(default)]
+    pub remap: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MissingMonitor {
+    /// Workspaces keep their numbers and land wherever Hyprland puts them;
+    /// monitors are matched by connector name only. What 0.1.x did.
+    #[default]
+    PreserveNumbers,
+    /// Every workspace of a missing monitor moves to the focused one.
+    Collapse,
+    /// Each missing monitor's workspaces move to the attached monitor most
+    /// like it — nearest aspect ratio, then area — with floating windows
+    /// scaled into it.
+    Remap,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -490,6 +520,7 @@ impl Default for Config {
             apps: HashMap::new(),
             browsers: HashMap::new(),
             providers: BTreeMap::new(),
+            monitors: MonitorConfig::default(),
         }
     }
 }

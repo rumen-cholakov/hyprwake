@@ -18,5 +18,6 @@ pub mod service;
 pub mod session;
 pub mod support;
 pub mod systemd;
+pub mod topology;
 pub mod watchlock;
 pub mod workspace;

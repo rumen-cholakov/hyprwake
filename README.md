@@ -116,6 +116,7 @@ hyprwake restore --dry-run --json  # the same plan, as structured actions
 hyprwake restore --max-age 7d   # skip a session older than this
 hyprwake restore --force        # restore even though windows are open
 hyprwake restore --missing-only # open only what is missing, leave the rest
+hyprwake restore --topology saved  # only onto the monitors it was saved on
 hyprwake diff                   # compare class/workspace counts with the desktop
 hyprwake list -v                # saved sessions, and what is in them
 hyprwake delete NAME
@@ -260,6 +261,26 @@ binary = "zen-browser"
 profiles_ini = ".zen/profiles.ini"
 profile_workspaces = { "default" = "2", "work" = "6" }
 ```
+
+Monitors are matched by connector name unless you ask for more. A snapshot
+also records each display's make, model and serial, so a laptop that docks
+somewhere else can be told apart from one that docked here:
+
+```toml
+[monitors]
+missing = "preserve-numbers" # default: a missing monitor's workspaces land
+                             # wherever Hyprland puts them, as before 0.2.0
+# missing = "remap"          # onto the attached monitor most like it, with
+                             # floating windows scaled into it
+# missing = "collapse"       # onto the focused monitor
+
+[monitors.remap]             # explicit, whatever `missing` says
+"DP-1" = "eDP-1"
+```
+
+With `remap` or `collapse`, a display is recognised by serial, then make and
+model, then connector — so the same monitor on another port keeps its
+workspaces, and a different monitor on a familiar port does not inherit them.
 
 The `[terminals]`, `[apps]` and `[browsers]` tables from earlier releases
 still work unchanged — including `[terminals]` replacing the built-in terminal

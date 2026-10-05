@@ -34,6 +34,14 @@ struct Cli {
     verbose: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum Topology {
+    /// Fit the session to whatever monitors are attached ([monitors] config)
+    Adapt,
+    /// Only onto the monitors it was saved on
+    Saved,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Snapshot the current session
@@ -62,6 +70,10 @@ enum Commands {
         /// Open only what is missing, leaving open windows alone
         #[arg(long)]
         missing_only: bool,
+        /// `saved`: refuse unless the monitors it was saved on are attached,
+        /// and rebuild that layout exactly
+        #[arg(long, value_enum, default_value_t = Topology::Adapt)]
+        topology: Topology,
     },
     /// List saved sessions
     List,
@@ -140,6 +152,7 @@ fn main() -> ExitCode {
             max_age,
             force,
             missing_only,
+            topology,
         } => cmd_restore(
             name,
             RestoreFlags {
@@ -147,6 +160,7 @@ fn main() -> ExitCode {
                 json,
                 force,
                 missing_only,
+                saved_topology: topology == Topology::Saved,
                 verbose: cli.verbose,
             },
             max_age,
@@ -240,6 +254,7 @@ struct RestoreFlags {
     json: bool,
     force: bool,
     missing_only: bool,
+    saved_topology: bool,
     verbose: bool,
 }
 
@@ -255,6 +270,7 @@ fn cmd_restore(
         json,
         force,
         missing_only,
+        saved_topology,
         verbose,
     } = flags;
     let name = session_name(name, config);
@@ -321,6 +337,7 @@ fn cmd_restore(
         verbose,
         force,
         missing_only,
+        saved_topology,
     };
     if json {
         return match hyprwake::restore::plan_restore(&session, &RealHyprctl, config, &opts) {

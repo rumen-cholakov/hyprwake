@@ -119,3 +119,13 @@ fn providers_reports_declaration_problems() {
         .stdout(contains("Problems:"))
         .stdout(contains("claimed by both"));
 }
+
+#[test]
+fn topology_accepts_only_known_values() {
+    hyprwake()
+        .args(["restore", "--topology", "sideways", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(contains("adapt"))
+        .stderr(contains("saved"));
+}
