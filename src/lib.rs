@@ -8,6 +8,7 @@ pub mod hyprctl;
 pub mod logging;
 pub mod lua;
 pub mod omarchy;
+pub mod plan;
 pub mod process;
 pub mod provider;
 pub mod restore;

@@ -50,6 +50,9 @@ enum Commands {
         /// Print what would happen, dispatch nothing
         #[arg(short, long)]
         dry_run: bool,
+        /// With --dry-run: print the restore plan as JSON actions
+        #[arg(long, requires = "dry_run")]
+        json: bool,
         /// Skip the restore when the session is older than this (30m, 24h, 7d)
         #[arg(long)]
         max_age: Option<String>,
@@ -133,18 +136,22 @@ fn main() -> ExitCode {
         Commands::Restore {
             name,
             dry_run,
+            json,
             max_age,
             force,
             missing_only,
         } => cmd_restore(
             name,
-            dry_run,
+            RestoreFlags {
+                dry_run,
+                json,
+                force,
+                missing_only,
+                verbose: cli.verbose,
+            },
             max_age,
-            force,
-            missing_only,
             &config,
             &dir,
-            cli.verbose,
         ),
         Commands::List => cmd_list(&dir, cli.verbose),
         Commands::Diff { name } => cmd_diff(name, &config, &dir),
@@ -228,17 +235,28 @@ fn cmd_save(
 /// that follows. Restore it by name if the restore came back wrong.
 const PRERESTORE: &str = "prerestore";
 
-#[allow(clippy::too_many_arguments)]
-fn cmd_restore(
-    name: Option<String>,
+struct RestoreFlags {
     dry_run: bool,
-    max_age: Option<String>,
+    json: bool,
     force: bool,
     missing_only: bool,
+    verbose: bool,
+}
+
+fn cmd_restore(
+    name: Option<String>,
+    flags: RestoreFlags,
+    max_age: Option<String>,
     config: &Config,
     dir: &Path,
-    verbose: bool,
 ) -> ExitCode {
+    let RestoreFlags {
+        dry_run,
+        json,
+        force,
+        missing_only,
+        verbose,
+    } = flags;
     let name = session_name(name, config);
     let session = match load_session(&name, dir) {
         Ok(s) => s,
@@ -304,6 +322,24 @@ fn cmd_restore(
         force,
         missing_only,
     };
+    if json {
+        return match hyprwake::restore::plan_restore(&session, &RealHyprctl, config, &opts) {
+            Ok(plan) => match serde_json::to_string_pretty(&plan) {
+                Ok(out) => {
+                    println!("{out}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("hyprwake: could not serialize the plan: {e}");
+                    ExitCode::FAILURE
+                }
+            },
+            Err(e) => {
+                eprintln!("hyprwake: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     match restore_session(&session, &RealHyprctl, config, &opts) {
         Ok(report) => {
             for line in &report.details {

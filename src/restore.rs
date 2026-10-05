@@ -15,7 +15,9 @@ use crate::config::Config;
 use crate::hyprctl::{HyprctlClient, HyprctlError};
 use crate::logging::log;
 use crate::lua::{lua_long_str, lua_str, shell_join};
-use crate::session::{BrowserProfile, Session, SessionClient};
+pub use crate::plan::RestorePlan;
+use crate::plan::Step;
+use crate::session::{Session, SessionClient};
 use crate::workspace::WorkspaceRef;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::thread::sleep;
@@ -62,8 +64,6 @@ pub fn restore_session(
     config: &Config,
     opts: &RestoreOptions,
 ) -> Result<RestoreReport, RestoreError> {
-    let mut report = RestoreReport::default();
-
     let initial = live_windows(hyprctl, config)?;
     // Merging is the answer to a populated desktop, so it does not trip the
     // guard that exists to stop one being duplicated.
@@ -87,126 +87,11 @@ pub fn restore_session(
         if use_uwsm { " via uwsm-app" } else { "" }
     ));
 
-    // Tiled windows first, in their old reading order, so the layout re-tiles
-    // roughly as it was; floating windows are positioned explicitly anyway.
-    let mut order: Vec<&SessionClient> = session.clients.iter().collect();
-    order.sort_by(|a, b| {
-        a.floating
-            .cmp(&b.floating)
-            .then(a.workspace.selector().cmp(&b.workspace.selector()))
-            .then(a.at[1].cmp(&b.at[1]))
-            .then(a.at[0].cmp(&b.at[0]))
-    });
-
-    // What is already on screen, by class, so a merge can tell "this window
-    // is back" from "this window is still missing".
-    let mut already: HashMap<String, usize> = HashMap::new();
-    if opts.missing_only {
-        for window in &initial {
-            *already.entry(window.class.clone()).or_default() += 1;
-        }
-    }
-
-    // Tiled windows already on each workspace, and how many this restore has
-    // launched there, so the loop can tell when the last one has mapped.
-    let mut on_workspace: HashMap<String, usize> = HashMap::new();
-    for window in &initial {
-        *on_workspace.entry(window.workspace.selector()).or_default() += 1;
-    }
-    let mut last_tiled: Option<String> = None;
-
-    for client in &order {
-        if !client.launch.spawn {
-            continue;
-        }
-        if opts.missing_only {
-            if let Some(count) = already.get_mut(&client.class) {
-                if *count > 0 {
-                    *count -= 1;
-                    report.already_open += 1;
-                    if opts.verbose {
-                        report
-                            .details
-                            .push(format!("already open: {}", client.class));
-                    }
-                    continue;
-                }
-            }
-        }
-        // Dwindle tiles in the order windows *map*. Before launching the next
-        // tiled window onto a workspace, wait for the previous one there to
-        // appear — otherwise a terminal launched second overtakes a browser
-        // launched first and the pair comes back swapped.
-        let selector = client.workspace.selector();
-        if !client.floating
-            && !opts.dry_run
-            && config.general.tiled_map_timeout_ms > 0
-            && last_tiled.as_deref() == Some(selector.as_str())
-        {
-            let want = on_workspace.get(&selector).copied().unwrap_or(0);
-            if !wait_for_map(hyprctl, config, &selector, want) {
-                log(format!(
-                    "tiled order: a window on {selector} did not map within {}ms; \
-                     launching the next anyway, so this pair may come back swapped",
-                    config.general.tiled_map_timeout_ms
-                ));
-                report.details.push(format!(
-                    "order not guaranteed on workspace {selector}: previous window did not map in time"
-                ));
-            }
-        }
-
-        let command = launch_command(&client.launch.argv, use_uwsm);
-        let call = exec_call(&command, &client.workspace, client);
-        if opts.dry_run {
-            report
-                .details
-                .push(format!("[dry-run] {} → {}", client.class, command));
-            report.details.push(format!("  hyprctl dispatch {call}"));
-            report.spawned += 1;
-            continue;
-        }
-        match hyprctl.dispatch(&call) {
-            Ok(()) => {
-                report.spawned += 1;
-                if !client.floating {
-                    *on_workspace.entry(selector.clone()).or_default() += 1;
-                    last_tiled = Some(selector.clone());
-                }
-                if opts.verbose {
-                    report.details.push(format!(
-                        "spawn {} → {}",
-                        client.class,
-                        client.workspace.selector()
-                    ));
-                }
-            }
-            Err(e) => {
-                report.failed += 1;
-                report
-                    .details
-                    .push(format!("FAIL spawn {}: {e}", client.class));
-                log(format!("spawn failed for {}: {e}", client.class));
-            }
-        }
-        sleep(Duration::from_millis(config.general.spawn_stagger_ms));
-    }
-
-    for profile in &session.browser_profiles {
-        restore_browser_profile(profile, hyprctl, config, opts, use_uwsm, &mut report);
-    }
-
+    let plan = plan_against(session, &initial, hyprctl, config, opts, use_uwsm)?;
     if opts.dry_run {
-        restore_workspace_monitors(session, hyprctl, opts, &mut report);
-        report_groups(session, opts, &mut report);
-        restore_focus(session, &HashMap::new(), hyprctl, opts, &mut report);
-        return Ok(report);
+        return Ok(crate::plan::render(&plan, opts));
     }
-
-    let paired = sweep(session, hyprctl, config, opts, initial, &mut report)?;
-    restore_workspace_monitors(session, hyprctl, opts, &mut report);
-    report_groups(session, opts, &mut report);
-    restore_focus(session, &paired, hyprctl, opts, &mut report);
+    let report = execute(&plan, session, hyprctl, config, opts, initial);
     log(format!(
         "restore done: spawned={} placed={} failed={} unmatched={}",
         report.spawned, report.placed, report.failed, report.unmatched
@@ -214,61 +99,197 @@ pub fn restore_session(
     Ok(report)
 }
 
-fn restore_browser_profile(
-    profile: &BrowserProfile,
+/// The plan a restore would carry out right now, for `restore --dry-run
+/// --json`. Reads the desktop; changes nothing.
+pub fn plan_restore(
+    session: &Session,
+    hyprctl: &dyn HyprctlClient,
+    config: &Config,
+    opts: &RestoreOptions,
+) -> Result<RestorePlan, RestoreError> {
+    let initial = live_windows(hyprctl, config)?;
+    plan_against(session, &initial, hyprctl, config, opts, config.use_uwsm())
+}
+
+fn plan_against(
+    session: &Session,
+    initial: &[crate::hyprctl::HyprClient],
     hyprctl: &dyn HyprctlClient,
     config: &Config,
     opts: &RestoreOptions,
     use_uwsm: bool,
-    report: &mut RestoreReport,
-) {
-    let Some(browser) = config.browsers.get(&profile.class) else {
-        return;
-    };
-    let argv = crate::browsers::profile_argv(browser, profile);
-    let command = launch_command(&argv, use_uwsm);
-    let workspace = WorkspaceRef::new(
-        profile.workspace.parse().unwrap_or(0),
-        profile.workspace.clone(),
-    );
-    let call = format!(
-        "hl.dsp.exec_cmd({}, {{ workspace = {} }})",
-        lua_long_str(&command),
-        lua_str(&format!("{} silent", workspace.selector()))
-    );
-
-    if opts.dry_run {
-        report.details.push(format!(
-            "[dry-run] {} profile \"{}\" → ws {}",
-            profile.class, profile.name, profile.workspace
-        ));
-        report.details.push(format!("  hyprctl dispatch {call}"));
-        report.spawned += 1;
-        return;
-    }
-
-    match hyprctl.dispatch(&call) {
-        Ok(()) => report.spawned += 1,
+) -> Result<RestorePlan, RestoreError> {
+    let monitors = match hyprctl.get_monitors() {
+        Ok(monitors) => Some(monitors),
         Err(e) => {
-            report.failed += 1;
-            report
-                .details
-                .push(format!("FAIL profile {}: {e}", profile.name));
+            log(format!("monitors: query failed: {e}"));
+            None
+        }
+    };
+    Ok(crate::plan::plan(
+        session,
+        initial,
+        monitors.as_deref(),
+        config,
+        opts,
+        use_uwsm,
+    ))
+}
+
+/// Carry a plan out. Every dispatch, sleep and poll of a restore is here.
+fn execute(
+    plan: &RestorePlan,
+    session: &Session,
+    hyprctl: &dyn HyprctlClient,
+    config: &Config,
+    opts: &RestoreOptions,
+    initial: Vec<crate::hyprctl::HyprClient>,
+) -> RestoreReport {
+    let mut report = RestoreReport {
+        already_open: plan.already_open,
+        groups_unrestored: plan.groups_unrestored,
+        ..Default::default()
+    };
+
+    // Windows already on each workspace plus those this restore has launched
+    // there, and the workspace of the last tiled launch that succeeded: the
+    // tiled-order wait is judged on what happened, not on what was planned,
+    // so a failed launch never becomes a wait for a window that will not come.
+    let mut on_workspace: HashMap<String, usize> = HashMap::new();
+    for window in &initial {
+        *on_workspace.entry(window.workspace.selector()).or_default() += 1;
+    }
+    let mut last_tiled: Option<String> = None;
+    let mut initial = Some(initial);
+    let mut paired: HashMap<usize, String> = HashMap::new();
+
+    for step in &plan.steps {
+        match step {
+            Step::AlreadyOpen { class, .. } => {
+                if opts.verbose {
+                    report.details.push(format!("already open: {class}"));
+                }
+            }
+            Step::Spawn {
+                class,
+                workspace,
+                tiled,
+                wait_for_previous,
+                call,
+                ..
+            } => {
+                if *tiled
+                    && *wait_for_previous
+                    && config.general.tiled_map_timeout_ms > 0
+                    && last_tiled.as_deref() == Some(workspace.as_str())
+                {
+                    let want = on_workspace.get(workspace).copied().unwrap_or(0);
+                    if !wait_for_map(hyprctl, config, workspace, want) {
+                        log(format!(
+                            "tiled order: a window on {workspace} did not map within {}ms; \
+                             launching the next anyway, so this pair may come back swapped",
+                            config.general.tiled_map_timeout_ms
+                        ));
+                        report.details.push(format!(
+                            "order not guaranteed on workspace {workspace}: previous window did not map in time"
+                        ));
+                    }
+                }
+                match hyprctl.dispatch(call) {
+                    Ok(()) => {
+                        report.spawned += 1;
+                        if *tiled {
+                            *on_workspace.entry(workspace.clone()).or_default() += 1;
+                            last_tiled = Some(workspace.clone());
+                        }
+                        if opts.verbose {
+                            report.details.push(format!("spawn {class} → {workspace}"));
+                        }
+                    }
+                    Err(e) => {
+                        report.failed += 1;
+                        report.details.push(format!("FAIL spawn {class}: {e}"));
+                        log(format!("spawn failed for {class}: {e}"));
+                    }
+                }
+                sleep(Duration::from_millis(config.general.spawn_stagger_ms));
+            }
+            Step::SpawnProfile { name, call, .. } => {
+                match hyprctl.dispatch(call) {
+                    Ok(()) => report.spawned += 1,
+                    Err(e) => {
+                        report.failed += 1;
+                        report.details.push(format!("FAIL profile {name}: {e}"));
+                    }
+                }
+                sleep(Duration::from_millis(config.general.spawn_stagger_ms));
+            }
+            Step::Sweep { expect } => {
+                let seen = initial.take().unwrap_or_default();
+                paired = sweep(session, expect, hyprctl, config, opts, seen, &mut report);
+            }
+            Step::MoveWorkspace {
+                workspace,
+                monitor,
+                call,
+            } => match hyprctl.dispatch(call) {
+                Ok(()) => {
+                    report.monitors_placed += 1;
+                    if opts.verbose {
+                        report
+                            .details
+                            .push(format!("workspace {workspace} → {monitor}"));
+                    }
+                }
+                Err(e) => log(format!("workspace {workspace} → {monitor} failed: {e}")),
+            },
+            Step::MonitorMissing { workspace, monitor } => {
+                let msg = Step::monitor_missing_note(workspace, monitor);
+                log(msg.clone());
+                if opts.verbose {
+                    report.details.push(msg);
+                }
+            }
+            Step::GroupUnrestored { group, classes } => {
+                let msg = Step::group_note(*group, classes);
+                log(msg.clone());
+                if opts.verbose {
+                    report.details.push(msg);
+                }
+            }
+            Step::Focus { call } => focus(hyprctl, call, &mut report),
+            Step::FocusWindow { client } => {
+                if let Some(address) = paired.get(client) {
+                    let call = format!(
+                        "hl.dsp.focus({{ window = {} }})",
+                        lua_str(&format!("address:{address}"))
+                    );
+                    focus(hyprctl, &call, &mut report);
+                }
+            }
         }
     }
-    sleep(Duration::from_millis(config.general.spawn_stagger_ms));
+    report
+}
+
+fn focus(hyprctl: &dyn HyprctlClient, call: &str, report: &mut RestoreReport) {
+    match hyprctl.dispatch(call) {
+        Ok(()) => report.focus_restored = true,
+        Err(e) => log(format!("focus: {e}")),
+    }
 }
 
 /// Pair windows that appeared after the spawns with their saved entries and
 /// place the ones the exec rules could not reach.
 fn sweep(
     session: &Session,
+    expect: &[usize],
     hyprctl: &dyn HyprctlClient,
     config: &Config,
     opts: &RestoreOptions,
     initial: Vec<crate::hyprctl::HyprClient>,
     report: &mut RestoreReport,
-) -> Result<HashMap<usize, String>, RestoreError> {
+) -> HashMap<usize, String> {
     // Which live window each saved client turned into, so later steps can
     // address them -- restoring focus needs to name a window.
     let mut paired: HashMap<usize, String> = HashMap::new();
@@ -278,7 +299,7 @@ fn sweep(
         .enumerate()
         .map(|(i, c)| (c as *const SessionClient, i))
         .collect();
-    let mut pending: Vec<&SessionClient> = session.clients.iter().collect();
+    let mut pending: Vec<&SessionClient> = expect.iter().map(|&i| &session.clients[i]).collect();
     let mut seen: HashSet<String> = initial.into_iter().map(|c| c.address).collect();
 
     let deadline = Instant::now() + Duration::from_secs(config.general.sweep_timeout_secs);
@@ -341,60 +362,7 @@ fn sweep(
     }
 
     report.unmatched = pending.len();
-    Ok(paired)
-}
-
-/// Put the desktop back the way it looked: each monitor on its workspace,
-/// and the focus where it was.
-///
-/// Runs last, after every window is in place. Anything earlier would be
-/// undone by the placements that follow.
-fn restore_focus(
-    session: &Session,
-    paired: &HashMap<usize, String>,
-    hyprctl: &dyn HyprctlClient,
-    opts: &RestoreOptions,
-    report: &mut RestoreReport,
-) {
-    let mut calls: Vec<String> = Vec::new();
-
-    for monitor in &session.monitors {
-        let Some(workspace) = &monitor.active_workspace else {
-            continue;
-        };
-        // A special workspace is an overlay, not a resting state.
-        if workspace.is_special() {
-            continue;
-        }
-        calls.push(format!(
-            "hl.dsp.focus({{ monitor = {} }})",
-            lua_str(&monitor.name)
-        ));
-        calls.push(format!(
-            "hl.dsp.focus({{ workspace = {} }})",
-            lua_str(&workspace.selector())
-        ));
-    }
-
-    // Focusing the window last also brings its monitor and workspace forward,
-    // so the session ends where the user left it.
-    if let Some(address) = session.focused_client().and_then(|i| paired.get(&i)) {
-        calls.push(format!(
-            "hl.dsp.focus({{ window = {} }})",
-            lua_str(&format!("address:{address}"))
-        ));
-    }
-
-    for call in calls {
-        if opts.dry_run {
-            report.details.push(format!("  hyprctl dispatch {call}"));
-            continue;
-        }
-        match hyprctl.dispatch(&call) {
-            Ok(()) => report.focus_restored = true,
-            Err(e) => log(format!("focus: {e}")),
-        }
-    }
+    paired
 }
 
 /// Index into `pending` of the best saved entry for `window`.
@@ -487,80 +455,6 @@ pub fn workspace_monitors(session: &Session) -> BTreeMap<String, String> {
                 .map(|(monitor, _)| (workspace, monitor))
         })
         .collect()
-}
-
-/// Send each workspace back to the monitor it was on.
-///
-/// Runs after the windows exist: Hyprland has no workspace to move until
-/// something is on it. Monitors that are no longer attached are skipped --
-/// a session saved on a docked laptop must still restore on the road.
-fn restore_workspace_monitors(
-    session: &Session,
-    hyprctl: &dyn HyprctlClient,
-    opts: &RestoreOptions,
-    report: &mut RestoreReport,
-) {
-    let wanted = workspace_monitors(session);
-    if wanted.is_empty() {
-        return;
-    }
-    let attached: HashSet<String> = match hyprctl.get_monitors() {
-        Ok(monitors) => monitors.into_iter().map(|m| m.name).collect(),
-        Err(e) => {
-            log(format!("monitors: query failed: {e}"));
-            return;
-        }
-    };
-
-    for (workspace, monitor) in wanted {
-        if !attached.contains(&monitor) {
-            let msg = format!("monitor {monitor} is not attached; leaving workspace {workspace}");
-            log(msg.clone());
-            if opts.verbose {
-                report.details.push(msg);
-            }
-            continue;
-        }
-        let call = workspace_move_call(&workspace, &monitor);
-        if opts.dry_run {
-            report.details.push(format!("  hyprctl dispatch {call}"));
-            continue;
-        }
-        match hyprctl.dispatch(&call) {
-            Ok(()) => {
-                report.monitors_placed += 1;
-                if opts.verbose {
-                    report
-                        .details
-                        .push(format!("workspace {workspace} → {monitor}"));
-                }
-            }
-            Err(e) => log(format!("workspace {workspace} → {monitor} failed: {e}")),
-        }
-    }
-}
-
-fn report_groups(session: &Session, opts: &RestoreOptions, report: &mut RestoreReport) {
-    let sets = grouped_sets(session);
-    if sets.is_empty() {
-        return;
-    }
-    report.groups_unrestored = sets.len();
-    for (group, members) in &sets {
-        let classes: Vec<&str> = members
-            .iter()
-            .map(|i| session.clients[*i].class.as_str())
-            .collect();
-        let msg = format!(
-            "group {group} ({}) restored as separate windows: Hyprland has no \
-             dispatcher to regroup them",
-            classes.join(", ")
-        );
-        log(msg.clone());
-        if opts.verbose || opts.dry_run {
-            report.details.push(msg);
-        }
-    }
 }
 
 pub fn workspace_move_call(workspace: &str, monitor: &str) -> String {
@@ -700,7 +594,7 @@ mod tests {
     use super::*;
     use crate::hyprctl::mock::MockHyprctl;
     use crate::hyprctl::HyprClient;
-    use crate::session::LaunchInfo;
+    use crate::session::{BrowserProfile, LaunchInfo};
     use chrono::Utc;
 
     fn saved(class: &str, ws: (i32, &str)) -> SessionClient {
@@ -968,6 +862,233 @@ mod tests {
             "{:?}",
             report.details
         );
+    }
+
+    // ── golden: the restore sequence as 0.1.3 + tiled-order emits it ──
+    //
+    // Recorded from the implementation before the plan/executor split, so the
+    // split can be checked against what restore actually did rather than
+    // against a reading of it: every dispatch in order, every report field and
+    // every detail line, live and dry-run. Regenerate only on a deliberate
+    // behaviour change, with HYPRWAKE_RECORD_GOLDEN=1, and say why.
+
+    fn golden_config(sweep_secs: u64, tiled_ms: u64) -> Config {
+        let mut c: Config = toml::from_str(
+            r#"
+[browsers.google-chrome]
+binary = "google-chrome-stable"
+local_state = "google-chrome/Local State"
+profile_workspaces = { "Profile 1" = "3" }
+"#,
+        )
+        .unwrap();
+        c.general.spawn_stagger_ms = 0;
+        c.general.sweep_poll_ms = 0;
+        c.general.sweep_timeout_secs = sweep_secs;
+        c.general.tiled_map_timeout_ms = tiled_ms;
+        c.launch.use_uwsm = Some(false);
+        c
+    }
+
+    fn monitor(name: &str, ws: (i32, &str), focused: bool) -> crate::session::Monitor {
+        crate::session::Monitor {
+            name: name.to_string(),
+            width: 1920,
+            height: 1080,
+            transform: 0,
+            active_workspace: Some(WorkspaceRef::new(ws.0, ws.1)),
+            focused,
+            make: String::new(),
+            model: String::new(),
+            serial: String::new(),
+            scale: 1.0,
+            position: [0, 0],
+        }
+    }
+
+    /// Two tiled windows sharing a group, a pinned floating window, a
+    /// profile-driven browser, a fullscreen window saved on a monitor that is
+    /// no longer attached, and a scratchpad window.
+    fn mixed_session() -> Session {
+        let mut foot = at(saved("foot", (1, "1")), 771);
+        foot.focus_history_id = 1;
+        foot.group = Some(0);
+        let mut code = at(saved("code", (1, "1")), 4);
+        code.focus_history_id = 0;
+        code.group = Some(0);
+        let mut obsidian = saved("obsidian", (2, "2"));
+        obsidian.floating = true;
+        obsidian.pinned = true;
+        obsidian.at = [100, 100];
+        obsidian.size = [900, 700];
+        obsidian.focus_history_id = 2;
+        let mut chrome = saved("google-chrome", (3, "3"));
+        chrome.launch.spawn = false;
+        chrome.focus_history_id = 3;
+        let mut mpv = saved("mpv", (10, "10"));
+        mpv.fullscreen = 2;
+        mpv.monitor = "HDMI-A-1".to_string();
+        mpv.focus_history_id = 4;
+        let mut scratch = saved("foot", (-99, "special:magic"));
+        scratch.focus_history_id = 5;
+        let mut s = session_of(vec![foot, code, obsidian, chrome, mpv, scratch]);
+        s.monitors = vec![
+            monitor("eDP-1", (1, "1"), true),
+            monitor("HDMI-A-1", (10, "10"), false),
+        ];
+        s.browser_profiles = vec![BrowserProfile {
+            class: "google-chrome".to_string(),
+            directory: "Profile 1".to_string(),
+            name: "Work".to_string(),
+            workspace: "3".to_string(),
+        }];
+        s
+    }
+
+    fn mixed_arrivals() -> Vec<HyprClient> {
+        let mut arrivals = vec![
+            live("foot", (1, "1"), "0xa"),
+            live("code", (9, "9"), "0xb"), // landed on the wrong workspace
+            live("obsidian", (2, "2"), "0xc"), // tiled, but saved floating
+            live("google-chrome", (3, "3"), "0xd"),
+            live("mpv", (10, "10"), "0xe"), // saved fullscreen
+            live("foot", (-99, "special:magic"), "0xf"),
+        ];
+        arrivals[0].at = [771, 30];
+        arrivals
+    }
+
+    struct Case {
+        name: &'static str,
+        session: Session,
+        frames: Vec<Vec<HyprClient>>,
+        config: Config,
+        opts: RestoreOptions,
+        reject: bool,
+    }
+
+    fn golden_restore_cases() -> Vec<Case> {
+        let verbose = RestoreOptions {
+            verbose: true,
+            ..Default::default()
+        };
+        vec![
+            Case {
+                name: "mixed-verbose",
+                session: mixed_session(),
+                frames: vec![vec![], mixed_arrivals()],
+                config: golden_config(1, 0),
+                opts: verbose.clone(),
+                reject: false,
+            },
+            Case {
+                name: "mixed-quiet",
+                session: mixed_session(),
+                frames: vec![vec![], mixed_arrivals()],
+                config: golden_config(1, 0),
+                opts: RestoreOptions::default(),
+                reject: false,
+            },
+            Case {
+                name: "missing-only",
+                session: session_of(vec![
+                    at(saved("foot", (1, "1")), 4),
+                    at(saved("code", (1, "1")), 771),
+                    saved("obsidian", (2, "2")),
+                ]),
+                frames: vec![
+                    vec![live("foot", (1, "1"), "0x1")],
+                    vec![
+                        live("foot", (1, "1"), "0x1"),
+                        live("code", (1, "1"), "0x2"),
+                        live("obsidian", (2, "2"), "0x3"),
+                    ],
+                ],
+                config: golden_config(1, 0),
+                opts: RestoreOptions {
+                    missing_only: true,
+                    verbose: true,
+                    ..Default::default()
+                },
+                reject: false,
+            },
+            Case {
+                name: "rejected",
+                session: session_of(vec![saved("foot", (1, "1")), saved("code", (2, "2"))]),
+                frames: vec![vec![]],
+                config: golden_config(0, 0),
+                opts: verbose.clone(),
+                reject: true,
+            },
+            Case {
+                name: "tiled-wait",
+                session: session_of(vec![
+                    at(saved("foot", (5, "5")), 771),
+                    at(saved("code", (5, "5")), 4),
+                ]),
+                frames: vec![
+                    vec![],
+                    vec![live("code", (5, "5"), "0xb")],
+                    vec![live("code", (5, "5"), "0xb"), live("foot", (5, "5"), "0xa")],
+                ],
+                config: golden_config(1, 1_000),
+                opts: verbose,
+                reject: false,
+            },
+        ]
+    }
+
+    fn record(case: &Case, dry_run: bool) -> serde_json::Value {
+        let mut hypr = MockHyprctl::new(case.frames.clone());
+        if case.reject {
+            hypr.reject = Some("nope".to_string());
+        }
+        let opts = RestoreOptions {
+            dry_run,
+            ..case.opts.clone()
+        };
+        let r = restore_session(&case.session, &hypr, &case.config, &opts).unwrap();
+        serde_json::json!({
+            "dispatched": hypr.calls(),
+            "spawned": r.spawned,
+            "placed": r.placed,
+            "failed": r.failed,
+            "unmatched": r.unmatched,
+            "monitors_placed": r.monitors_placed,
+            "groups_unrestored": r.groups_unrestored,
+            "focus_restored": r.focus_restored,
+            "already_open": r.already_open,
+            "details": r.details,
+        })
+    }
+
+    #[test]
+    fn golden_restore_sequence_is_unchanged() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/restore-golden.json"
+        );
+        let mut got = serde_json::Map::new();
+        for case in golden_restore_cases() {
+            got.insert(
+                case.name.to_string(),
+                serde_json::json!({ "live": record(&case, false), "dry_run": record(&case, true) }),
+            );
+        }
+        let got = serde_json::Value::Object(got);
+        if std::env::var_os("HYPRWAKE_RECORD_GOLDEN").is_some() {
+            std::fs::write(path, serde_json::to_string_pretty(&got).unwrap() + "\n").unwrap();
+            return;
+        }
+        let want: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("golden fixture")).unwrap();
+        for (name, expected) in want.as_object().unwrap() {
+            assert_eq!(
+                &got[name], expected,
+                "restore sequence drifted for case {name}"
+            );
+        }
+        assert_eq!(got, want, "golden cases added or removed");
     }
 
     // ── command building ──

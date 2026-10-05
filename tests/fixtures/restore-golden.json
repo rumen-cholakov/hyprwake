@@ -1,0 +1,284 @@
+{
+  "missing-only": {
+    "dry_run": {
+      "already_open": 1,
+      "details": [
+        "already open: foot",
+        "[dry-run] code → code",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[code]], { workspace = '1 silent' })",
+        "[dry-run] obsidian → obsidian",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[obsidian]], { workspace = '2 silent' })",
+        "  hyprctl dispatch hl.dsp.workspace.move({ workspace = '1', monitor = 'eDP-1' })",
+        "  hyprctl dispatch hl.dsp.workspace.move({ workspace = '2', monitor = 'eDP-1' })"
+      ],
+      "dispatched": [],
+      "failed": 0,
+      "focus_restored": false,
+      "groups_unrestored": 0,
+      "monitors_placed": 0,
+      "placed": 0,
+      "spawned": 2,
+      "unmatched": 0
+    },
+    "live": {
+      "already_open": 1,
+      "details": [
+        "already open: foot",
+        "spawn code → 1",
+        "spawn obsidian → 2",
+        "workspace 1 → eDP-1",
+        "workspace 2 → eDP-1"
+      ],
+      "dispatched": [
+        "hl.dsp.exec_cmd([[code]], { workspace = '1 silent' })",
+        "hl.dsp.exec_cmd([[obsidian]], { workspace = '2 silent' })",
+        "hl.dsp.workspace.move({ workspace = '1', monitor = 'eDP-1' })",
+        "hl.dsp.workspace.move({ workspace = '2', monitor = 'eDP-1' })"
+      ],
+      "failed": 0,
+      "focus_restored": false,
+      "groups_unrestored": 0,
+      "monitors_placed": 2,
+      "placed": 0,
+      "spawned": 2,
+      "unmatched": 1
+    }
+  },
+  "mixed-quiet": {
+    "dry_run": {
+      "already_open": 0,
+      "details": [
+        "[dry-run] code → code",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[code]], { workspace = '1 silent' })",
+        "[dry-run] foot → foot",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[foot]], { workspace = '1 silent' })",
+        "[dry-run] mpv → mpv",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[mpv]], { workspace = '10 silent' })",
+        "[dry-run] foot → foot",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[foot]], { workspace = 'special:magic silent' })",
+        "[dry-run] obsidian → obsidian",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[obsidian]], { workspace = '2 silent', float = true, move = {100, 100}, size = {900, 700}, pin = true })",
+        "[dry-run] google-chrome profile \"Work\" → ws 3",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[google-chrome-stable '--profile-directory=Profile 1']], { workspace = '3 silent' })",
+        "  hyprctl dispatch hl.dsp.workspace.move({ workspace = '1', monitor = 'eDP-1' })",
+        "  hyprctl dispatch hl.dsp.workspace.move({ workspace = '2', monitor = 'eDP-1' })",
+        "  hyprctl dispatch hl.dsp.workspace.move({ workspace = '3', monitor = 'eDP-1' })",
+        "group 0 (foot, code) restored as separate windows: Hyprland has no dispatcher to regroup them",
+        "  hyprctl dispatch hl.dsp.focus({ monitor = 'eDP-1' })",
+        "  hyprctl dispatch hl.dsp.focus({ workspace = '1' })",
+        "  hyprctl dispatch hl.dsp.focus({ monitor = 'HDMI-A-1' })",
+        "  hyprctl dispatch hl.dsp.focus({ workspace = '10' })"
+      ],
+      "dispatched": [],
+      "failed": 0,
+      "focus_restored": false,
+      "groups_unrestored": 1,
+      "monitors_placed": 0,
+      "placed": 0,
+      "spawned": 6,
+      "unmatched": 0
+    },
+    "live": {
+      "already_open": 0,
+      "details": [],
+      "dispatched": [
+        "hl.dsp.exec_cmd([[code]], { workspace = '1 silent' })",
+        "hl.dsp.exec_cmd([[foot]], { workspace = '1 silent' })",
+        "hl.dsp.exec_cmd([[mpv]], { workspace = '10 silent' })",
+        "hl.dsp.exec_cmd([[foot]], { workspace = 'special:magic silent' })",
+        "hl.dsp.exec_cmd([[obsidian]], { workspace = '2 silent', float = true, move = {100, 100}, size = {900, 700}, pin = true })",
+        "hl.dsp.exec_cmd([[google-chrome-stable '--profile-directory=Profile 1']], { workspace = '3 silent' })",
+        "hl.dsp.window.move({ workspace = '1', follow = false, window = 'address:0xb' })",
+        "hl.dsp.window.move({ workspace = '2', follow = false, window = 'address:0xc' })",
+        "hl.dsp.window.float({ action = 'on', window = 'address:0xc' })",
+        "hl.dsp.window.resize({ x = 900, y = 700, window = 'address:0xc' })",
+        "hl.dsp.window.move({ x = 100, y = 100, relative = false, window = 'address:0xc' })",
+        "hl.dsp.window.pin({ action = 'on', window = 'address:0xc' })",
+        "hl.dsp.window.move({ workspace = '10', follow = false, window = 'address:0xe' })",
+        "hl.dsp.window.fullscreen({ mode = 'fullscreen', action = 'set', window = 'address:0xe' })",
+        "hl.dsp.workspace.move({ workspace = '1', monitor = 'eDP-1' })",
+        "hl.dsp.workspace.move({ workspace = '2', monitor = 'eDP-1' })",
+        "hl.dsp.workspace.move({ workspace = '3', monitor = 'eDP-1' })",
+        "hl.dsp.focus({ monitor = 'eDP-1' })",
+        "hl.dsp.focus({ workspace = '1' })",
+        "hl.dsp.focus({ monitor = 'HDMI-A-1' })",
+        "hl.dsp.focus({ workspace = '10' })",
+        "hl.dsp.focus({ window = 'address:0xb' })"
+      ],
+      "failed": 0,
+      "focus_restored": true,
+      "groups_unrestored": 1,
+      "monitors_placed": 3,
+      "placed": 3,
+      "spawned": 6,
+      "unmatched": 0
+    }
+  },
+  "mixed-verbose": {
+    "dry_run": {
+      "already_open": 0,
+      "details": [
+        "[dry-run] code → code",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[code]], { workspace = '1 silent' })",
+        "[dry-run] foot → foot",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[foot]], { workspace = '1 silent' })",
+        "[dry-run] mpv → mpv",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[mpv]], { workspace = '10 silent' })",
+        "[dry-run] foot → foot",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[foot]], { workspace = 'special:magic silent' })",
+        "[dry-run] obsidian → obsidian",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[obsidian]], { workspace = '2 silent', float = true, move = {100, 100}, size = {900, 700}, pin = true })",
+        "[dry-run] google-chrome profile \"Work\" → ws 3",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[google-chrome-stable '--profile-directory=Profile 1']], { workspace = '3 silent' })",
+        "  hyprctl dispatch hl.dsp.workspace.move({ workspace = '1', monitor = 'eDP-1' })",
+        "monitor HDMI-A-1 is not attached; leaving workspace 10",
+        "  hyprctl dispatch hl.dsp.workspace.move({ workspace = '2', monitor = 'eDP-1' })",
+        "  hyprctl dispatch hl.dsp.workspace.move({ workspace = '3', monitor = 'eDP-1' })",
+        "group 0 (foot, code) restored as separate windows: Hyprland has no dispatcher to regroup them",
+        "  hyprctl dispatch hl.dsp.focus({ monitor = 'eDP-1' })",
+        "  hyprctl dispatch hl.dsp.focus({ workspace = '1' })",
+        "  hyprctl dispatch hl.dsp.focus({ monitor = 'HDMI-A-1' })",
+        "  hyprctl dispatch hl.dsp.focus({ workspace = '10' })"
+      ],
+      "dispatched": [],
+      "failed": 0,
+      "focus_restored": false,
+      "groups_unrestored": 1,
+      "monitors_placed": 0,
+      "placed": 0,
+      "spawned": 6,
+      "unmatched": 0
+    },
+    "live": {
+      "already_open": 0,
+      "details": [
+        "spawn code → 1",
+        "spawn foot → 1",
+        "spawn mpv → 10",
+        "spawn foot → special:magic",
+        "spawn obsidian → 2",
+        "place code → 1",
+        "place obsidian → 2",
+        "place mpv → 10",
+        "workspace 1 → eDP-1",
+        "monitor HDMI-A-1 is not attached; leaving workspace 10",
+        "workspace 2 → eDP-1",
+        "workspace 3 → eDP-1",
+        "group 0 (foot, code) restored as separate windows: Hyprland has no dispatcher to regroup them"
+      ],
+      "dispatched": [
+        "hl.dsp.exec_cmd([[code]], { workspace = '1 silent' })",
+        "hl.dsp.exec_cmd([[foot]], { workspace = '1 silent' })",
+        "hl.dsp.exec_cmd([[mpv]], { workspace = '10 silent' })",
+        "hl.dsp.exec_cmd([[foot]], { workspace = 'special:magic silent' })",
+        "hl.dsp.exec_cmd([[obsidian]], { workspace = '2 silent', float = true, move = {100, 100}, size = {900, 700}, pin = true })",
+        "hl.dsp.exec_cmd([[google-chrome-stable '--profile-directory=Profile 1']], { workspace = '3 silent' })",
+        "hl.dsp.window.move({ workspace = '1', follow = false, window = 'address:0xb' })",
+        "hl.dsp.window.move({ workspace = '2', follow = false, window = 'address:0xc' })",
+        "hl.dsp.window.float({ action = 'on', window = 'address:0xc' })",
+        "hl.dsp.window.resize({ x = 900, y = 700, window = 'address:0xc' })",
+        "hl.dsp.window.move({ x = 100, y = 100, relative = false, window = 'address:0xc' })",
+        "hl.dsp.window.pin({ action = 'on', window = 'address:0xc' })",
+        "hl.dsp.window.move({ workspace = '10', follow = false, window = 'address:0xe' })",
+        "hl.dsp.window.fullscreen({ mode = 'fullscreen', action = 'set', window = 'address:0xe' })",
+        "hl.dsp.workspace.move({ workspace = '1', monitor = 'eDP-1' })",
+        "hl.dsp.workspace.move({ workspace = '2', monitor = 'eDP-1' })",
+        "hl.dsp.workspace.move({ workspace = '3', monitor = 'eDP-1' })",
+        "hl.dsp.focus({ monitor = 'eDP-1' })",
+        "hl.dsp.focus({ workspace = '1' })",
+        "hl.dsp.focus({ monitor = 'HDMI-A-1' })",
+        "hl.dsp.focus({ workspace = '10' })",
+        "hl.dsp.focus({ window = 'address:0xb' })"
+      ],
+      "failed": 0,
+      "focus_restored": true,
+      "groups_unrestored": 1,
+      "monitors_placed": 3,
+      "placed": 3,
+      "spawned": 6,
+      "unmatched": 0
+    }
+  },
+  "rejected": {
+    "dry_run": {
+      "already_open": 0,
+      "details": [
+        "[dry-run] foot → foot",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[foot]], { workspace = '1 silent' })",
+        "[dry-run] code → code",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[code]], { workspace = '2 silent' })",
+        "  hyprctl dispatch hl.dsp.workspace.move({ workspace = '1', monitor = 'eDP-1' })",
+        "  hyprctl dispatch hl.dsp.workspace.move({ workspace = '2', monitor = 'eDP-1' })"
+      ],
+      "dispatched": [],
+      "failed": 0,
+      "focus_restored": false,
+      "groups_unrestored": 0,
+      "monitors_placed": 0,
+      "placed": 0,
+      "spawned": 2,
+      "unmatched": 0
+    },
+    "live": {
+      "already_open": 0,
+      "details": [
+        "FAIL spawn foot: dispatch rejected: nope",
+        "FAIL spawn code: dispatch rejected: nope"
+      ],
+      "dispatched": [
+        "hl.dsp.exec_cmd([[foot]], { workspace = '1 silent' })",
+        "hl.dsp.exec_cmd([[code]], { workspace = '2 silent' })",
+        "hl.dsp.workspace.move({ workspace = '1', monitor = 'eDP-1' })",
+        "hl.dsp.workspace.move({ workspace = '2', monitor = 'eDP-1' })"
+      ],
+      "failed": 2,
+      "focus_restored": false,
+      "groups_unrestored": 0,
+      "monitors_placed": 0,
+      "placed": 0,
+      "spawned": 0,
+      "unmatched": 2
+    }
+  },
+  "tiled-wait": {
+    "dry_run": {
+      "already_open": 0,
+      "details": [
+        "[dry-run] code → code",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[code]], { workspace = '5 silent' })",
+        "[dry-run] foot → foot",
+        "  hyprctl dispatch hl.dsp.exec_cmd([[foot]], { workspace = '5 silent' })",
+        "  hyprctl dispatch hl.dsp.workspace.move({ workspace = '5', monitor = 'eDP-1' })"
+      ],
+      "dispatched": [],
+      "failed": 0,
+      "focus_restored": false,
+      "groups_unrestored": 0,
+      "monitors_placed": 0,
+      "placed": 0,
+      "spawned": 2,
+      "unmatched": 0
+    },
+    "live": {
+      "already_open": 0,
+      "details": [
+        "spawn code → 5",
+        "spawn foot → 5",
+        "workspace 5 → eDP-1"
+      ],
+      "dispatched": [
+        "hl.dsp.exec_cmd([[code]], { workspace = '5 silent' })",
+        "hl.dsp.exec_cmd([[foot]], { workspace = '5 silent' })",
+        "hl.dsp.workspace.move({ workspace = '5', monitor = 'eDP-1' })",
+        "hl.dsp.focus({ window = 'address:0xa' })"
+      ],
+      "failed": 0,
+      "focus_restored": true,
+      "groups_unrestored": 0,
+      "monitors_placed": 1,
+      "placed": 0,
+      "spawned": 2,
+      "unmatched": 0
+    }
+  }
+}

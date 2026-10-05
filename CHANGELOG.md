@@ -49,6 +49,11 @@
   browser, an unclean exit or several profiles.
 - **`hyprwake config --init`** writes the new form. Terminals already handled
   by a built-in provider are listed rather than repeated.
+- **`hyprwake restore --dry-run --json`** prints the restore as a list of
+  structured actions — launches, the sweep, workspace moves, focus — for
+  scripts and bug reports. A dry run and a live restore are now two readings
+  of one plan, rather than two code paths that each claimed to describe the
+  same restore; a recorded fixture pins every dispatch a live restore makes.
 - **opencode conversations come back.** opencode is now reopened inside its
   terminal and resumed with `--session <id>`, looked up in its own database by
   directory. Subagent runs, which opencode records as child sessions in the
