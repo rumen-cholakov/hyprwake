@@ -4,7 +4,7 @@ use crate::capture::relaunch_argv;
 use crate::config::Config;
 use crate::hyprctl::HyprctlClient;
 use crate::process::ProcessInfoProvider;
-use crate::session::{list_sessions, load_session};
+use crate::session::{list_sessions, load_session, Session, SessionError, SCHEMA_VERSION};
 use serde::Serialize;
 use std::path::Path;
 
@@ -56,6 +56,26 @@ pub fn supports_lua_dispatchers(version: &str) -> bool {
         [major, minor, ..] => *major > 0 || *minor >= 55,
         _ => false,
     }
+}
+
+/// What the snapshot on disk says it is, and what wrote it.
+///
+/// An older snapshot is fine — it is migrated on load — so this reports
+/// rather than warns. It exists because "which schema was that" is the first
+/// question a compatibility report has to answer.
+fn schema_check(session: &Session) -> Check {
+    let wrote = if session.created_by.is_empty() {
+        "written before hyprwake recorded its own version".to_string()
+    } else {
+        format!("written by hyprwake {}", session.created_by)
+    };
+    let on_disk = session.loaded_from.unwrap_or(session.schema_version);
+    let detail = if on_disk < SCHEMA_VERSION {
+        format!("snapshot schema v{on_disk} (migrated to v{SCHEMA_VERSION} on load), {wrote}")
+    } else {
+        format!("snapshot schema v{on_disk}, {wrote}")
+    };
+    Check::new("schema", Status::Ok, detail)
 }
 
 pub fn run(
@@ -189,7 +209,19 @@ pub fn run(
                     format_age(age)
                 ),
             ));
+            checks.push(schema_check(&session));
         }
+        // A snapshot from a newer hyprwake is not the same complaint as no
+        // snapshot at all, and it is the one a compatibility report needs to
+        // say out loud.
+        Err(SessionError::TooNew { found, supported }) => checks.push(Check::new(
+            "session",
+            Status::Fail,
+            format!(
+                "'{default}' is schema v{found}; this build reads up to v{supported}. \
+                 Upgrade hyprwake, or restore from an older snapshot."
+            ),
+        )),
         Err(_) => checks.push(Check::new(
             "session",
             Status::Warn,
@@ -296,6 +328,46 @@ mod tests {
     fn version_gate_tolerates_suffixes() {
         assert!(supports_lua_dispatchers("v0.56.2"));
         assert!(supports_lua_dispatchers("0.56-dirty"));
+    }
+
+    #[test]
+    fn a_migrated_snapshot_says_which_version_it_came_from() {
+        let session =
+            crate::session::parse_session(include_str!("../tests/fixtures/session-v1.json"))
+                .unwrap();
+        let check = schema_check(&session);
+
+        assert_eq!(check.status, Status::Ok, "an old snapshot still restores");
+        assert!(check.detail.contains("v1"), "{}", check.detail);
+        assert!(check.detail.contains("migrated"), "{}", check.detail);
+        assert!(
+            check
+                .detail
+                .contains("before hyprwake recorded its own version"),
+            "{}",
+            check.detail
+        );
+    }
+
+    #[test]
+    fn a_current_snapshot_names_the_hyprwake_that_wrote_it() {
+        let dir = TempDir::new().unwrap();
+        let mut session =
+            crate::session::parse_session(include_str!("../tests/fixtures/session-v1.json"))
+                .unwrap();
+        session.name = "latest".to_string();
+        session.created_by = "0.2.0".to_string();
+        crate::session::save_session(&session, dir.path()).unwrap();
+
+        let reloaded = crate::session::load_session("latest", dir.path()).unwrap();
+        let check = schema_check(&reloaded);
+        assert!(check.detail.contains("v2"), "{}", check.detail);
+        assert!(!check.detail.contains("migrated"), "{}", check.detail);
+        assert!(
+            check.detail.contains("written by hyprwake 0.2.0"),
+            "{}",
+            check.detail
+        );
     }
 
     #[test]

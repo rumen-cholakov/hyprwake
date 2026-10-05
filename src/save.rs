@@ -114,6 +114,10 @@ mod tests {
     fn session(name: &str, windows: usize) -> Session {
         Session {
             name: name.to_string(),
+            schema_version: crate::session::SCHEMA_VERSION,
+            created_by: env!("CARGO_PKG_VERSION").to_string(),
+            loaded_from: None,
+            workspaces: vec![],
             created_at: Utc::now(),
             hyprland_version: "0.56.2".to_string(),
             monitors: vec![],
@@ -131,9 +135,12 @@ mod tests {
                     fullscreen: 0,
                     focus_history_id: 0,
                     group: None,
+                    identity: Default::default(),
                     launch: LaunchInfo {
                         argv: vec![format!("app{i}")],
                         spawn: true,
+                        provider: None,
+                        provider_state: None,
                     },
                 })
                 .collect(),

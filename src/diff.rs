@@ -88,9 +88,12 @@ mod tests {
             fullscreen: 0,
             focus_history_id: 0,
             group: None,
+            identity: Default::default(),
             launch: LaunchInfo {
                 argv: vec![],
                 spawn: true,
+                provider: None,
+                provider_state: None,
             },
         }
     }
@@ -118,6 +121,10 @@ mod tests {
     #[test]
     fn reports_missing_and_unexpected_windows_without_titles() {
         let saved = Session {
+            schema_version: crate::session::SCHEMA_VERSION,
+            created_by: env!("CARGO_PKG_VERSION").to_string(),
+            loaded_from: None,
+            workspaces: vec![],
             name: "latest".to_string(),
             created_at: Utc::now(),
             hyprland_version: String::new(),

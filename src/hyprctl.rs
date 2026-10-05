@@ -62,6 +62,29 @@ pub struct HyprMonitor {
     pub active_workspace: Option<WorkspaceRef>,
     #[serde(default)]
     pub focused: bool,
+    /// Panel identity, for recognising the same display on a different port.
+    ///
+    /// `name` is a connector — `DP-1` is where a display is plugged in, not
+    /// which display it is. A laptop that docks somewhere else gets a
+    /// different name for the same panel, so these are captured too.
+    #[serde(default)]
+    pub make: String,
+    #[serde(default)]
+    pub model: String,
+    /// Frequently empty: built-in panels often report no serial.
+    #[serde(default)]
+    pub serial: String,
+    #[serde(default = "default_scale")]
+    pub scale: f32,
+    /// Position in the layout, in logical pixels.
+    #[serde(default)]
+    pub x: i32,
+    #[serde(default)]
+    pub y: i32,
+}
+
+fn default_scale() -> f32 {
+    1.0
 }
 
 // ── Error type ─────────────────────────────────────────────────────────────
@@ -186,6 +209,12 @@ pub mod mock {
                     transform: 0,
                     active_workspace: Some(WorkspaceRef::new(1, "1")),
                     focused: true,
+                    make: "Sharp Corporation".to_string(),
+                    model: "0x149A".to_string(),
+                    serial: String::new(),
+                    scale: 1.0,
+                    x: 0,
+                    y: 0,
                 }],
                 reject: None,
             }

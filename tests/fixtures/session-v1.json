@@ -1,0 +1,178 @@
+{
+  "name": "v1-fixture",
+  "created_at": "2026-09-05T09:12:44.000000000Z",
+  "hyprland_version": "0.56.2",
+  "monitors": [
+    {
+      "name": "eDP-1",
+      "width": 1920,
+      "height": 1080,
+      "transform": 0,
+      "active_workspace": {
+        "id": 2,
+        "name": "2"
+      },
+      "focused": true
+    }
+  ],
+  "clients": [
+    {
+      "class": "foot",
+      "initial_class": "foot",
+      "title": "user@host:~/projects/api",
+      "workspace": {
+        "id": 1,
+        "name": "1"
+      },
+      "monitor": "eDP-1",
+      "at": [
+        771,
+        30
+      ],
+      "size": [
+        761,
+        830
+      ],
+      "floating": false,
+      "pinned": false,
+      "fullscreen": 0,
+      "focus_history_id": 3,
+      "group": null,
+      "launch": {
+        "argv": [
+          "foot",
+          "-D",
+          "/home/user/projects/api"
+        ],
+        "spawn": true
+      }
+    },
+    {
+      "class": "foot",
+      "initial_class": "foot",
+      "title": "nvim - main.rs",
+      "workspace": {
+        "id": 1,
+        "name": "1"
+      },
+      "monitor": "eDP-1",
+      "at": [
+        4,
+        30
+      ],
+      "size": [
+        761,
+        830
+      ],
+      "floating": false,
+      "pinned": false,
+      "fullscreen": 0,
+      "focus_history_id": 4,
+      "group": null,
+      "launch": {
+        "argv": [
+          "foot",
+          "-D",
+          "/home/user/projects/api",
+          "nvim"
+        ],
+        "spawn": true
+      }
+    },
+    {
+      "class": "foot",
+      "initial_class": "foot",
+      "title": "user@host:~",
+      "workspace": {
+        "id": 4,
+        "name": "4"
+      },
+      "monitor": "eDP-1",
+      "at": [
+        4,
+        30
+      ],
+      "size": [
+        1528,
+        830
+      ],
+      "floating": false,
+      "pinned": false,
+      "fullscreen": 0,
+      "focus_history_id": 2,
+      "group": null,
+      "launch": {
+        "argv": [
+          "foot",
+          "-D",
+          "/home/user"
+        ],
+        "spawn": true
+      }
+    },
+    {
+      "class": "code",
+      "initial_class": "code",
+      "title": "code window",
+      "workspace": {
+        "id": 3,
+        "name": "3"
+      },
+      "monitor": "eDP-1",
+      "at": [
+        4,
+        30
+      ],
+      "size": [
+        1528,
+        830
+      ],
+      "floating": false,
+      "pinned": false,
+      "fullscreen": 0,
+      "focus_history_id": 1,
+      "group": null,
+      "launch": {
+        "argv": [
+          "/usr/share/code/code"
+        ],
+        "spawn": true
+      }
+    },
+    {
+      "class": "google-chrome",
+      "initial_class": "google-chrome",
+      "title": "google-chrome window",
+      "workspace": {
+        "id": 2,
+        "name": "2"
+      },
+      "monitor": "eDP-1",
+      "at": [
+        4,
+        30
+      ],
+      "size": [
+        1528,
+        830
+      ],
+      "floating": false,
+      "pinned": false,
+      "fullscreen": 0,
+      "focus_history_id": 0,
+      "group": null,
+      "launch": {
+        "argv": [
+          "/opt/google/chrome/chrome",
+          "--ozone-platform=wayland",
+          "--ozone-platform-hint=wayland",
+          "--password-store=gnome-libsecret",
+          "--enable-features=TouchpadOverscrollHistoryNavigation",
+          "--load-extension=/usr/share/omarchy/default/chromium/extensions/copy-url,/usr/share/omarchy/default/chromium/extensions/yt-dlp,/usr/share/omarchy/default/chromium/extensions/whatsapp-slim"
+        ],
+        "spawn": true
+      }
+    }
+  ],
+  "browser_profiles": []
+}

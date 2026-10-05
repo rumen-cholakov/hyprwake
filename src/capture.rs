@@ -4,7 +4,9 @@ use crate::browsers;
 use crate::config::{AppConfig, Config};
 use crate::hyprctl::{HyprClient, HyprctlClient, HyprctlError};
 use crate::process::ProcessInfoProvider;
-use crate::session::{BrowserProfile, LaunchInfo, Monitor, Session, SessionClient};
+use crate::session::{
+    self, BrowserProfile, Identity, LaunchInfo, Monitor, Session, SessionClient, Workspace,
+};
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
 
@@ -82,28 +84,73 @@ pub fn capture_session(
             fullscreen: raw.fullscreen,
             focus_history_id: raw.focus_history_id,
             group: group_ids.get(&raw.address).copied(),
-            launch: LaunchInfo { argv, spawn },
+            // Populated in the ranked-matching phase; reserved here so the
+            // schema bumps once for the whole release.
+            identity: Identity::default(),
+            launch: LaunchInfo {
+                argv,
+                spawn,
+                provider: None,
+                provider_state: None,
+            },
         });
     }
 
+    let monitors: Vec<Monitor> = raw_monitors
+        .iter()
+        .map(|m| Monitor {
+            name: m.name.clone(),
+            width: m.width,
+            height: m.height,
+            transform: m.transform,
+            active_workspace: m.active_workspace.clone(),
+            focused: m.focused,
+            make: m.make.clone(),
+            model: m.model.clone(),
+            serial: m.serial.clone(),
+            scale: m.scale,
+            position: [m.x, m.y],
+        })
+        .collect();
+
     Ok(Session {
+        schema_version: session::SCHEMA_VERSION,
+        created_by: env!("CARGO_PKG_VERSION").to_string(),
+        loaded_from: None,
         name: name.to_string(),
         created_at: Utc::now(),
         hyprland_version: version,
-        monitors: raw_monitors
-            .iter()
-            .map(|m| Monitor {
-                name: m.name.clone(),
-                width: m.width,
-                height: m.height,
-                transform: m.transform,
-                active_workspace: m.active_workspace.clone(),
-                focused: m.focused,
-            })
-            .collect(),
+        workspaces: workspaces_of(&clients),
+        monitors,
         clients,
         browser_profiles,
     })
+}
+
+/// One entry per workspace the snapshot actually contains, in first-seen
+/// order.
+///
+/// The monitor comes from the windows on it rather than from `hyprctl
+/// workspaces`, so a workspace with no windows produces no entry — there is
+/// nothing to restore onto it.
+fn workspaces_of(clients: &[SessionClient]) -> Vec<Workspace> {
+    let mut seen: Vec<Workspace> = Vec::new();
+    for client in clients {
+        if seen
+            .iter()
+            .any(|w| w.workspace.selector() == client.workspace.selector())
+        {
+            continue;
+        }
+        seen.push(Workspace {
+            workspace: client.workspace.clone(),
+            monitor: client.monitor.clone(),
+            layout: None,
+            layout_kind: None,
+            layout_confidence: None,
+        });
+    }
+    seen
 }
 
 /// Assign a stable index to each window group, keyed by window address.

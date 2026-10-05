@@ -20,6 +20,17 @@
   instead. Values in ordinary arguments are unaffected. If you copied the old
   codex example, replace it with the one now in the README.
 
+### New
+
+- **Snapshots say which format they are in.** Each snapshot now records a
+  schema version and the hyprwake that wrote it. Older snapshots still load and
+  restore unchanged — they are migrated in memory. A snapshot from a *newer*
+  hyprwake is refused with a message naming its version; 0.1.3 would instead
+  have restored it, silently dropping every field it did not understand.
+  `hyprwake status` and `doctor` report the schema. Snapshots also record each
+  monitor's make, model, serial, scale and position, so a display can later be
+  recognised on a different port.
+
 ### Fixes
 
 - **Running the test suite no longer stops your watcher.** A service test

@@ -11,7 +11,7 @@ use hyprwake::save::{perform_save, SaveOutcome};
 use hyprwake::service;
 use hyprwake::session::{
     delete_session, list_autosave_sessions, list_sessions, load_session, parse_max_age,
-    save_session, session_exists, SessionError,
+    save_session, session_exists, SessionError, SCHEMA_VERSION,
 };
 use hyprwake::support;
 use std::path::Path;
@@ -714,14 +714,28 @@ fn cmd_uninstall() -> ExitCode {
 fn cmd_status(config: &Config, dir: &Path) -> ExitCode {
     let default = &config.general.default_session;
     match load_session(default, dir) {
-        Ok(session) => println!(
-            "Session: {} — {} window(s), saved {}",
-            session.name,
-            session.clients.len(),
-            session
-                .created_at
-                .with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M")
+        Ok(session) => {
+            println!(
+                "Session: {} — {} window(s), saved {}",
+                session.name,
+                session.clients.len(),
+                session
+                    .created_at
+                    .with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M")
+            );
+            // Only worth a line when it is not the current one: an older
+            // snapshot still restores, but it explains anything missing.
+            let on_disk = session.loaded_from.unwrap_or(session.schema_version);
+            if on_disk < SCHEMA_VERSION {
+                println!(
+                    "  Schema: v{on_disk}, migrated to v{} on load",
+                    SCHEMA_VERSION
+                );
+            }
+        }
+        Err(SessionError::TooNew { found, supported }) => println!(
+            "Session: unreadable — '{default}' is schema v{found}, this hyprwake reads up to v{supported}"
         ),
         Err(_) => println!("Session: none — run `hyprwake save`"),
     }

@@ -717,9 +717,12 @@ mod tests {
             fullscreen: 0,
             focus_history_id: 0,
             group: None,
+            identity: Default::default(),
             launch: LaunchInfo {
                 argv: vec![class.to_string()],
                 spawn: true,
+                provider: None,
+                provider_state: None,
             },
         }
     }
@@ -753,6 +756,10 @@ mod tests {
     fn session_of(clients: Vec<SessionClient>) -> Session {
         Session {
             name: "latest".to_string(),
+            schema_version: crate::session::SCHEMA_VERSION,
+            created_by: env!("CARGO_PKG_VERSION").to_string(),
+            loaded_from: None,
+            workspaces: vec![],
             created_at: Utc::now(),
             hyprland_version: "0.56.2".to_string(),
             monitors: vec![],
@@ -1227,6 +1234,11 @@ mod tests {
             transform: 0,
             active_workspace: Some(WorkspaceRef::new(3, "3")),
             focused: true,
+            make: String::new(),
+            model: String::new(),
+            serial: String::new(),
+            scale: 1.0,
+            position: [0, 0],
         }];
         let hypr = MockHyprctl::new(vec![vec![]]);
         let report =
@@ -1253,6 +1265,11 @@ mod tests {
             transform: 0,
             active_workspace: Some(WorkspaceRef::new(-99, "special:magic")),
             focused: true,
+            make: String::new(),
+            model: String::new(),
+            serial: String::new(),
+            scale: 1.0,
+            position: [0, 0],
         }];
         let hypr = MockHyprctl::new(vec![vec![]]);
         restore_session(&session, &hypr, &fast_config(), &RestoreOptions::default()).unwrap();
