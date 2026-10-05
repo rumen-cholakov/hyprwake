@@ -925,6 +925,21 @@ fn cmd_providers(class: Option<String>, config: &Config) -> ExitCode {
         if matches!(r.spec, ProviderSpec::Terminal(_)) {
             println!("  a TUI running inside it is reopened too; `hyprwake providers` lists which");
         }
+        if let ProviderSpec::External(e) = r.spec {
+            let helpers = std::iter::once(("capture", &e.capture))
+                .chain(e.relaunch.as_ref().map(|r| ("relaunch", r)));
+            for (role, command) in helpers {
+                println!("  {role}: {}", command.join(" "));
+                let verdict = match command.first() {
+                    None => "is empty, so nothing runs".to_string(),
+                    Some(program) => match hyprwake::external::trusted(program) {
+                        Ok(_) => "runs".to_string(),
+                        Err(why) => format!("will not run: {why}"),
+                    },
+                };
+                println!("    {verdict}");
+            }
+        }
         if r.spec
             .browser()
             .is_some_and(|b| b.profile_workspaces.is_empty())

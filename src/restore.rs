@@ -100,11 +100,11 @@ pub fn restore_session(
         if use_uwsm { " via uwsm-app" } else { "" }
     ));
 
-    let plan = plan_against(session, &initial, hyprctl, config, opts, use_uwsm)?;
+    let (plan, session) = plan_against(session, &initial, hyprctl, config, opts, use_uwsm)?;
     if opts.dry_run {
         return Ok(crate::plan::render(&plan, opts));
     }
-    let report = execute(&plan, session, hyprctl, config, opts, initial);
+    let report = execute(&plan, &session, hyprctl, config, opts, initial);
     log(format!(
         "restore done: spawned={} placed={} failed={} unmatched={}",
         report.spawned, report.placed, report.failed, report.unmatched
@@ -121,7 +121,7 @@ pub fn plan_restore(
     opts: &RestoreOptions,
 ) -> Result<RestorePlan, RestoreError> {
     let initial = live_windows(hyprctl, config)?;
-    plan_against(session, &initial, hyprctl, config, opts, config.use_uwsm())
+    plan_against(session, &initial, hyprctl, config, opts, config.use_uwsm()).map(|(plan, _)| plan)
 }
 
 fn plan_against(
@@ -131,7 +131,7 @@ fn plan_against(
     config: &Config,
     opts: &RestoreOptions,
     use_uwsm: bool,
-) -> Result<RestorePlan, RestoreError> {
+) -> Result<(RestorePlan, Session), RestoreError> {
     let monitors = match hyprctl.get_monitors() {
         Ok(monitors) => Some(monitors),
         Err(e) => {
@@ -152,14 +152,72 @@ fn plan_against(
             )));
         }
     }
-    Ok(crate::plan::plan(
-        session,
+    // External relaunch helpers run before planning, so the plan itself
+    // stays pure; their answers lead the plan, so a dry run shows them
+    // before anything it would launch.
+    let (session, asked) = relaunch_external(session, config);
+    let mut plan = crate::plan::plan(
+        &session,
         initial,
         monitors.as_deref(),
         config,
         opts,
         use_uwsm,
-    ))
+    );
+    plan.steps.splice(0..0, asked);
+    Ok((plan, session))
+}
+
+/// Ask each external provider that owns a saved window what to start for it.
+///
+/// The provider is the one recorded at capture, since the state it handed
+/// over is its own. A helper that fails, times out or answers with something
+/// that cannot be launched leaves the saved argv in place.
+fn relaunch_external(session: &Session, config: &Config) -> (Session, Vec<Step>) {
+    let providers = crate::provider::ProviderSet::from_config(config);
+    let mut session = session.clone();
+    let mut asked = Vec::new();
+    for (index, client) in session.clients.iter_mut().enumerate() {
+        if !client.launch.spawn {
+            continue;
+        }
+        let Some(key) = client.launch.provider.clone() else {
+            continue;
+        };
+        let Some(command) = providers.get(&key).and_then(|p| match &p.entry.spec {
+            crate::provider::ProviderSpec::External(e) => e.relaunch.clone(),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let request = crate::external::RelaunchRequest {
+            contract: crate::external::CONTRACT,
+            event: "relaunch",
+            class: &client.class,
+            workspace: client.workspace.selector(),
+            argv: &client.launch.argv,
+            state: client.launch.provider_state.as_ref(),
+        };
+        let (result, reply) = crate::external::relaunch(&command, &request);
+        let rejected = match result {
+            Ok(relaunch) => {
+                client.launch.argv = relaunch.argv;
+                if let Some(workspace) = relaunch.workspace {
+                    client.workspace = workspace;
+                }
+                None
+            }
+            Err(e) => Some(e.to_string()),
+        };
+        asked.push(Step::ExternalRelaunch {
+            client: index,
+            class: client.class.clone(),
+            provider: key,
+            reply,
+            rejected,
+        });
+    }
+    (session, asked)
 }
 
 /// Carry a plan out. Every dispatch, sleep and poll of a restore is here.
@@ -192,6 +250,27 @@ fn execute(
 
     for step in &plan.steps {
         match step {
+            Step::ExternalRelaunch {
+                class,
+                provider,
+                rejected,
+                ..
+            } => match rejected {
+                Some(why) => {
+                    let msg =
+                        format!("external {provider} for {class}: {why}; launched the saved argv");
+                    log(msg.clone());
+                    report.details.push(msg);
+                }
+                None => {
+                    log(format!("external {provider} relaunched {class}"));
+                    if opts.verbose {
+                        report
+                            .details
+                            .push(format!("external {provider} relaunched {class}"));
+                    }
+                }
+            },
             Step::AlreadyOpen {
                 client,
                 class,
@@ -1234,6 +1313,84 @@ profile_workspaces = { "Profile 1" = "3" }
             .filter(|d| d.contains("Lua config manager"))
             .count();
         assert_eq!(explained, 1, "{:?}", report.details);
+    }
+
+    // ── external providers ──
+
+    /// A saved "mailapp" window owned by an external provider whose helper
+    /// runs `body`, from a private directory.
+    fn external_restore(dir: &std::path::Path, body: &str) -> (Session, Config) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let helper = dir.join("mail-helper");
+        std::fs::write(&helper, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config: Config = toml::from_str(&format!(
+            "[providers.mail]\nkind = \"external\"\nclasses = [\"mailapp\"]\n\
+             capture = [\"{h}\", \"capture\"]\nrelaunch = [\"{h}\", \"relaunch\"]\n",
+            h = helper.display()
+        ))
+        .unwrap();
+        let fast = fast_config();
+        config.general = fast.general;
+        config.launch = fast.launch;
+        let mut mail = saved("mailapp", (2, "2"));
+        mail.launch.argv = vec!["mailapp".into(), "--tray".into()];
+        mail.launch.provider = Some("mail".into());
+        mail.launch.provider_state = Some(serde_json::json!({"folder": "Inbox"}));
+        (session_of(vec![mail]), config)
+    }
+
+    #[test]
+    fn a_relaunch_helper_decides_what_starts_and_a_dry_run_shows_its_reply() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Answers only if it was handed the state capture recorded.
+        let (session, config) = external_restore(
+            dir.path(),
+            r#"req=$(cat); case "$req" in *'"folder":"Inbox"'*) echo '{"contract":1,"argv":["mailapp","--folder","Inbox"],"workspace":"name:mail"}';; *) exit 1;; esac"#,
+        );
+        let hypr = MockHyprctl::new(vec![vec![]]);
+        let opts = RestoreOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let report = restore_session(&session, &hypr, &config, &opts).unwrap();
+        assert!(
+            report.details[0].starts_with("[external] mail relaunch for mailapp: {\"contract\":1"),
+            "the reply comes first, verbatim: {:?}",
+            report.details
+        );
+        assert!(
+            report.details.iter().any(|d| d.contains(
+                "exec_cmd([[mailapp --folder Inbox]], { workspace = 'name:mail silent' })"
+            )),
+            "{:?}",
+            report.details
+        );
+        assert!(hypr.calls().is_empty(), "a dry run dispatches nothing");
+    }
+
+    #[test]
+    fn a_failing_relaunch_helper_leaves_the_saved_argv() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (session, config) = external_restore(dir.path(), "exit 1");
+        let hypr = MockHyprctl::new(vec![vec![]]);
+        let report = restore_session(&session, &hypr, &config, &RestoreOptions::default()).unwrap();
+        assert!(
+            hypr.calls()
+                .iter()
+                .any(|c| c.contains("exec_cmd([[mailapp --tray]], { workspace = '2 silent' })")),
+            "{:#?}",
+            hypr.calls()
+        );
+        assert!(
+            report
+                .details
+                .iter()
+                .any(|d| d.contains("external mail for mailapp") && d.contains("saved argv")),
+            "{:?}",
+            report.details
+        );
     }
 
     // ── command building ──

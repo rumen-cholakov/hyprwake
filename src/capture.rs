@@ -2,6 +2,7 @@
 
 use crate::browsers;
 use crate::config::{Config, TerminalConfig};
+use crate::external::{self, ExternalConfig};
 use crate::hyprctl::{HyprClient, HyprctlClient, HyprctlError};
 use crate::process::ProcessInfoProvider;
 use crate::provider::{CommandConfig, ProviderSet, ProviderSpec, Resolution};
@@ -63,7 +64,7 @@ pub fn capture_session(
             continue;
         }
         let resolution = providers.resolve(&raw.class);
-        let Some(argv) = launch_argv(raw, process, config, &resolution) else {
+        let Some(Launch { argv, state }) = launch_argv(raw, process, config, &resolution) else {
             // No argv means the process vanished between the query and the
             // read, or it is not ours to relaunch.
             continue;
@@ -104,7 +105,7 @@ pub fn capture_session(
                 argv,
                 spawn,
                 provider: Some(resolution.key.to_string()),
-                provider_state: None,
+                provider_state: state,
             },
         });
     }
@@ -204,7 +205,14 @@ pub fn relaunch_argv(
     config: &Config,
 ) -> Option<Vec<String>> {
     let providers = ProviderSet::from_config(config);
-    launch_argv(client, process, config, &providers.resolve(&client.class))
+    launch_argv(client, process, config, &providers.resolve(&client.class)).map(|l| l.argv)
+}
+
+/// What capture records about how to bring a window back.
+struct Launch {
+    argv: Vec<String>,
+    /// An external provider's own state, handed back to it on restore.
+    state: Option<serde_json::Value>,
 }
 
 /// Dispatch on the mechanism the class resolved to. Adding a provider kind
@@ -214,11 +222,55 @@ fn launch_argv(
     process: &dyn ProcessInfoProvider,
     config: &Config,
     resolution: &Resolution<'_>,
-) -> Option<Vec<String>> {
+) -> Option<Launch> {
+    let plain = |argv| Launch { argv, state: None };
     match resolution.spec {
-        ProviderSpec::Terminal(term) => terminal_argv(client, process, config, term),
+        ProviderSpec::Terminal(term) => terminal_argv(client, process, config, term).map(plain),
         ProviderSpec::Chromium(_) | ProviderSpec::Firefox(_) | ProviderSpec::Command(_) => {
-            replayed_argv(client, process, &resolution.command())
+            replayed_argv(client, process, &resolution.command()).map(plain)
+        }
+        ProviderSpec::External(external) => {
+            external_launch(client, process, resolution.key, external)
+        }
+    }
+}
+
+/// Ask an external provider's capture helper. Whatever goes wrong, the
+/// window is still saved: with its own argv replayed, as if no provider
+/// claimed it, and the reason in the log.
+fn external_launch(
+    client: &HyprClient,
+    process: &dyn ProcessInfoProvider,
+    key: &str,
+    config: &ExternalConfig,
+) -> Option<Launch> {
+    let own = process.cmdline(client.pid).map(split_blob_cmdline);
+    let cwd = process
+        .cwd(client.pid)
+        .map(|p| p.to_string_lossy().into_owned());
+    let request = external::CaptureRequest {
+        contract: external::CONTRACT,
+        event: "capture",
+        class: &client.class,
+        pid: client.pid,
+        cwd: cwd.as_deref(),
+        argv: own.as_deref().unwrap_or(&[]),
+    };
+    match external::capture(config, &request) {
+        Ok(captured) => {
+            let argv = captured.argv.or(own)?;
+            Some(Launch {
+                argv,
+                state: captured.state,
+            })
+        }
+        Err(e) => {
+            crate::logging::log(format!(
+                "capture: [providers.{key}] for {}: {e}; replaying its own argv",
+                client.class
+            ));
+            own.filter(|argv| !argv.is_empty())
+                .map(|argv| Launch { argv, state: None })
         }
     }
 }
@@ -1372,6 +1424,60 @@ exec_flag = "-e"
             relaunch_argv(&client("foot", 20), &proc, &cfg).unwrap(),
             vec!["foot", "-D", "/x"]
         );
+    }
+
+    /// An external provider claiming "mailapp", whose capture helper is
+    /// `body` in a private directory with `mode`.
+    fn external_config(dir: &std::path::Path, body: &str, mode: u32) -> Config {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let helper = dir.join("mail-helper");
+        std::fs::write(&helper, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(mode)).unwrap();
+        toml::from_str(&format!(
+            "[providers.mail]\nkind = \"external\"\nclasses = [\"mailapp\"]\n\
+             capture = [\"{}\", \"capture\"]\n",
+            helper.display()
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_external_provider_records_the_helpers_argv_and_state() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cfg = external_config(
+            dir.path(),
+            r#"cat >/dev/null; echo '{"contract":1,"argv":["mailapp","--folder","Inbox"],"state":{"folder":"Inbox"}}'"#,
+            0o700,
+        );
+        let mut proc = MockProcessInfo::default();
+        proc.add(80, "mailapp", &["/usr/bin/mailapp", "--tray"], "/");
+        let hypr = MockHyprctl::new(vec![vec![client("mailapp", 80)]]);
+        let session = capture_session("latest", &hypr, &proc, &cfg).unwrap();
+        let launch = &session.clients[0].launch;
+        assert_eq!(launch.argv, vec!["mailapp", "--folder", "Inbox"]);
+        assert_eq!(launch.provider.as_deref(), Some("mail"));
+        assert_eq!(
+            launch.provider_state,
+            Some(serde_json::json!({"folder": "Inbox"}))
+        );
+    }
+
+    #[test]
+    fn an_untrusted_external_helper_is_skipped_and_the_window_still_saved() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cfg = external_config(
+            dir.path(),
+            r#"echo '{"contract":1,"argv":["evil"]}'"#,
+            0o777,
+        );
+        let mut proc = MockProcessInfo::default();
+        proc.add(80, "mailapp", &["/usr/bin/mailapp", "--tray"], "/");
+        let hypr = MockHyprctl::new(vec![vec![client("mailapp", 80)]]);
+        let session = capture_session("latest", &hypr, &proc, &cfg).unwrap();
+        let launch = &session.clients[0].launch;
+        assert_eq!(launch.argv, vec!["/usr/bin/mailapp", "--tray"]);
+        assert_eq!(launch.provider_state, None);
     }
 
     #[test]

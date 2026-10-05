@@ -32,13 +32,22 @@
   recognised on a different port.
 - **Providers.** Which mechanism captures and reopens a window class is now
   declared rather than implied by the order of an if-else chain. The
-  mechanisms stay built in — `terminal`, `chromium`, `firefox`, `command` —
-  and instances are declared as `[providers.<name>]` with a `kind` and the
-  window `classes` they claim, including `prefix*` patterns. They add to the
-  built-ins. A wrong `kind`, a missing required field, or an option on the
+  mechanisms stay built in — `terminal`, `chromium`, `firefox`, `command`,
+  and `external` below — and instances are declared as `[providers.<name>]`
+  with a `kind` and the window `classes` they claim, including `prefix*`
+  patterns. They add to the built-ins. A wrong `kind`, a missing required field, or an option on the
   wrong kind (`restore_last_session` on Firefox, a typo in `strip_args`) is a
   load error with its line number instead of a silent no-op. See
   [docs/PROVIDERS.md](docs/PROVIDERS.md).
+- **External providers.** `kind = "external"` hands capture and relaunch of
+  a window class to a helper program speaking JSON on stdin and stdout, under
+  a contract versioned separately from the snapshot schema. The helper runs
+  only if it is an executable you own that nobody else can write, in a
+  directory nobody else can write; it gets three seconds; every argv token and
+  workspace it returns is checked before use; and any failure falls back to
+  replaying the window's own argv, with the reason in the log, the restore
+  report and `doctor`. `restore --dry-run` shows each helper's reply verbatim.
+  See [docs/PROVIDERS.md](docs/PROVIDERS.md).
 - **`hyprwake providers`** lists every provider in effect and where it was
   declared; `hyprwake providers <class>` explains how one class resolves.
   Declaration problems — two providers claiming one class — are shown there

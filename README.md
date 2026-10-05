@@ -288,6 +288,11 @@ With `remap` or `collapse`, a display is recognised by serial, then make and
 model, then connector — so the same monitor on another port keeps its
 workspaces, and a different monitor on a familiar port does not inherit them.
 
+For an application none of the built-in kinds fits, `kind = "external"`
+hands capture and relaunch to a helper program you write, speaking JSON;
+hyprwake runs it only if nobody but you can change it, and checks what it
+returns. The contract is in docs/PROVIDERS.md.
+
 The `[terminals]`, `[apps]` and `[browsers]` tables from earlier releases
 still work unchanged — including `[terminals]` replacing the built-in terminal
 table when you list any — and are read into the same providers.

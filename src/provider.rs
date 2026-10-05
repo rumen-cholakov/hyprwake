@@ -22,6 +22,7 @@
 use crate::config::{
     default_terminals, AppConfig, BrowserConfig, BrowserKind, Config, TerminalConfig,
 };
+use crate::external::ExternalConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -42,6 +43,9 @@ pub enum ProviderSpec {
     /// Replay the window's own argv, optionally with a different binary or
     /// arguments stripped.
     Command(CommandConfig),
+    /// Hand capture and relaunch to a helper program speaking JSON. See
+    /// [`crate::external`] for the contract and what it is trusted with.
+    External(ExternalConfig),
 }
 
 impl ProviderSpec {
@@ -51,6 +55,7 @@ impl ProviderSpec {
             ProviderSpec::Chromium(_) => "chromium",
             ProviderSpec::Firefox(_) => "firefox",
             ProviderSpec::Command(_) => "command",
+            ProviderSpec::External(_) => "external",
         }
     }
 
@@ -75,7 +80,9 @@ impl ProviderSpec {
                 default_workspace: f.default_workspace.clone(),
                 restore_last_session: false,
             }),
-            ProviderSpec::Terminal(_) | ProviderSpec::Command(_) => None,
+            ProviderSpec::Terminal(_) | ProviderSpec::Command(_) | ProviderSpec::External(_) => {
+                None
+            }
         }
     }
 
@@ -85,7 +92,7 @@ impl ProviderSpec {
             ProviderSpec::Chromium(c) => &c.strip_args,
             ProviderSpec::Firefox(f) => &f.strip_args,
             ProviderSpec::Command(c) => &c.strip_args,
-            ProviderSpec::Terminal(_) => &[],
+            ProviderSpec::Terminal(_) | ProviderSpec::External(_) => &[],
         }
     }
 }
@@ -439,6 +446,19 @@ impl ProviderSet {
         })
     }
 
+    /// A provider by its key, as recorded in a snapshot.
+    pub fn get(&self, key: &str) -> Option<&Provider> {
+        self.providers.iter().find(|p| p.key == key)
+    }
+
+    /// External providers, for `doctor`.
+    pub fn externals(&self) -> impl Iterator<Item = (&Provider, &ExternalConfig)> {
+        self.providers.iter().filter_map(|p| match &p.entry.spec {
+            ProviderSpec::External(e) => Some((p, e)),
+            _ => None,
+        })
+    }
+
     /// The browser configuration for a class, if a browser provider claims
     /// it.
     pub fn browser_for(&self, class: &str) -> Option<BrowserConfig> {
@@ -704,6 +724,26 @@ classes = ["jetbrains-pycharm"]
             GENERIC,
             "a mid-string * never matches"
         );
+    }
+
+    #[test]
+    fn an_external_provider_parses_and_rejects_unknown_keys() {
+        let s = set(
+            "[providers.mail]\nkind = \"external\"\nclasses = [\"mailapp\"]\n\
+             capture = [\"~/.config/hyprwake/providers/mail\", \"capture\"]\n\
+             relaunch = [\"~/.config/hyprwake/providers/mail\", \"relaunch\"]\n",
+        );
+        let r = s.resolve("mailapp");
+        assert_eq!(r.spec.kind(), "external");
+        assert_eq!(s.externals().count(), 1);
+        assert_eq!(s.get("mail").unwrap().key, "mail");
+        let e = parse_error(
+            "[providers.mail]\nkind = \"external\"\nclasses = [\"m\"]\ncapture = [\"/x\"]\n\
+             plan = [\"/x\"]\n",
+        );
+        assert!(e.contains("plan"), "{e}");
+        let e = parse_error("[providers.mail]\nkind = \"external\"\nclasses = [\"m\"]\n");
+        assert!(e.contains("capture"), "{e}");
     }
 
     #[test]

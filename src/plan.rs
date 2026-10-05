@@ -32,6 +32,16 @@ use std::collections::{BTreeMap, HashMap};
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Step {
+    /// An external provider's relaunch helper was asked what to start for a
+    /// saved window. `reply` is what it printed, verbatim; `rejected` says
+    /// why it was not used, in which case the saved argv is launched.
+    ExternalRelaunch {
+        client: usize,
+        class: String,
+        provider: String,
+        reply: Option<String>,
+        rejected: Option<String>,
+    },
     /// `--missing-only`: this saved window is already on screen, as the
     /// window at `address`.
     AlreadyOpen {
@@ -391,6 +401,21 @@ pub fn render(plan: &RestorePlan, opts: &RestoreOptions) -> RestoreReport {
     let out = &mut report.details;
     for step in &plan.steps {
         match step {
+            Step::ExternalRelaunch {
+                class,
+                provider,
+                reply,
+                rejected,
+                ..
+            } => {
+                out.push(format!(
+                    "[external] {provider} relaunch for {class}: {}",
+                    reply.as_deref().map(str::trim).unwrap_or("(no reply)")
+                ));
+                if let Some(why) = rejected {
+                    out.push(format!("  not used: {why}; the saved argv is launched"));
+                }
+            }
             Step::AlreadyOpen { class, .. } => {
                 if opts.verbose {
                     out.push(format!("already open: {class}"));

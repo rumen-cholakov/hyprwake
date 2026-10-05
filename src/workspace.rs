@@ -42,6 +42,31 @@ impl WorkspaceRef {
         format!("name:{}", self.name)
     }
 
+    /// The workspace a dispatcher selector names, for selectors that come
+    /// from outside — an external provider's reply. Accepts what
+    /// [`selector`](Self::selector) produces and nothing else, so a value
+    /// carrying a dispatcher flag (`"3 silent"`) or a second statement is
+    /// refused rather than passed on.
+    pub fn from_selector(s: &str) -> Option<Self> {
+        if s.is_empty() || s.len() > 128 || s.chars().any(|c| c.is_control() || c == ' ') {
+            return None;
+        }
+        if let Ok(id) = s.parse::<i32>() {
+            return (id > 0).then(|| Self::new(id, s));
+        }
+        if s == "special" || s == "special:special" {
+            return Some(Self::new(-99, "special"));
+        }
+        if let Some(name) = s.strip_prefix("special:") {
+            return (!name.is_empty()).then(|| Self::new(-99, s));
+        }
+        let name = s.strip_prefix("name:")?;
+        if name.is_empty() || name.parse::<i32>().is_ok() || name.starts_with("special") {
+            return None;
+        }
+        Some(Self::new(0, name))
+    }
+
     pub fn is_special(&self) -> bool {
         self.name == "special" || self.name.starts_with("special:")
     }
@@ -57,6 +82,24 @@ impl WorkspaceRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_selector_parses_back_to_the_workspace_it_names() {
+        for ws in [
+            WorkspaceRef::new(3, "3"),
+            WorkspaceRef::new(7, "code"),
+            WorkspaceRef::new(-99, "special"),
+            WorkspaceRef::new(-98, "special:magic"),
+        ] {
+            let parsed = WorkspaceRef::from_selector(&ws.selector()).unwrap();
+            assert!(parsed.same(&ws), "{}", ws.selector());
+        }
+        for bad in [
+            "", "0", "-2", "3 silent", "name:", "name:4", "x", "special:", "1\n2",
+        ] {
+            assert_eq!(WorkspaceRef::from_selector(bad), None, "{bad:?}");
+        }
+    }
 
     #[test]
     fn numbered_workspace_uses_id() {

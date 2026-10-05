@@ -186,6 +186,31 @@ pub fn run(
         ));
     }
 
+    // ── external providers: a helper that will not be run ──
+    let mut refused = Vec::new();
+    for (provider, external) in providers.externals() {
+        let helpers = std::iter::once(&external.capture).chain(external.relaunch.as_ref());
+        for program in helpers.filter_map(|c| c.first()) {
+            if let Err(why) = crate::external::trusted(program) {
+                let line = format!("[providers.{}] {why}", provider.key);
+                // Capture and relaunch are often one helper.
+                if !refused.contains(&line) {
+                    refused.push(line);
+                }
+            }
+        }
+    }
+    if !refused.is_empty() {
+        checks.push(Check::new(
+            "external",
+            Status::Warn,
+            format!(
+                "{}; those windows are saved and restored from their own argv instead",
+                refused.join("; ")
+            ),
+        ));
+    }
+
     // ── live windows ──
     match hyprctl.get_clients() {
         Ok(clients) => {

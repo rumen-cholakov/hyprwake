@@ -4,6 +4,7 @@ pub mod capture;
 pub mod config;
 pub mod diff;
 pub mod doctor;
+pub mod external;
 pub mod hyprctl;
 pub mod logging;
 pub mod lua;

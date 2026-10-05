@@ -16,6 +16,7 @@ The **mechanisms** are a closed set, built into hyprwake:
 | `chromium` | A Chromium-family browser. Profiles are read from `Local State` and each mapped profile is reopened with `--profile-directory`. |
 | `firefox` | A Firefox-family browser. Profiles are read from `profiles.ini` and each mapped profile is reopened by name with `-P`. |
 | `command` | Replay the window's own argv from `/proc`, optionally with a different binary or some arguments stripped. |
+| `external` | Hand capture and relaunch to a helper program you write, speaking JSON — see [External providers](#external-providers). |
 
 The **instances** are yours, declared in `~/.config/hyprwake/config.toml`:
 
@@ -57,7 +58,8 @@ number — so `restore_last_session` on a Firefox browser, or `strip_arg` for
 unknown keys, because it shares its fields with the legacy `[terminals]`
 table and a config that loaded under 0.1.3 must still load.
 
-A mechanism that is not in the table needs Rust. An instance never does.
+A mechanism that is not in the table needs Rust, or an `external` helper. An
+instance never does.
 
 ## Which provider wins
 
@@ -196,12 +198,86 @@ preference — so the option does not exist for `kind = "firefox"`.
   terminal, so the local directory is what is captured, and it exists.
   Reconnecting automatically at boot is deliberately not done.
 
-## Not built: external providers
+## External providers
 
-The 0.2.0 plan proposed a `kind = "external"` provider that delegates capture
-and relaunch to a helper speaking JSON. It is not in 0.2.0. Its motivating
-case was session managers, but those are programs *inside* a terminal, not
-window classes, so a provider claimed by class cannot capture them — the
-right hook for them is the resume layer, which already runs helpers. Whether
-an external kind is still worth its trust boundary for applications with a
-window class of their own is an open decision.
+When no built-in mechanism fits an application with a window class of its
+own, `kind = "external"` hands its windows to a helper you write:
+
+```toml
+[providers.mail]
+kind = "external"
+classes = ["mailapp"]
+capture = ["~/.config/hyprwake/providers/mail", "capture"]
+relaunch = ["~/.config/hyprwake/providers/mail", "relaunch"]   # optional
+```
+
+The helper reads one JSON object on stdin and writes one on stdout. The
+contract is versioned on its own — `contract`, currently `1` — independently
+of the snapshot schema; a reply with another version is not believed.
+
+**capture** runs at every save, once per window of a claimed class:
+
+```json
+{"contract": 1, "event": "capture", "class": "mailapp", "pid": 4242,
+ "cwd": "/home/you", "argv": ["/usr/bin/mailapp", "--tray"]}
+```
+
+It answers with what to launch, opaque state of its own, or both:
+
+```json
+{"contract": 1, "argv": ["mailapp", "--folder", "Inbox"], "state": {"folder": "Inbox"}}
+```
+
+Without `argv` the window's own argv is replayed. `state` — at most 16 KiB of
+JSON — is stored in the snapshot as the window's `provider_state` and handed
+back, untouched, at restore.
+
+**relaunch**, if configured, runs at restore before anything is launched,
+once per saved window that provider captured:
+
+```json
+{"contract": 1, "event": "relaunch", "class": "mailapp", "workspace": "2",
+ "argv": ["mailapp", "--folder", "Inbox"], "state": {"folder": "Inbox"}}
+```
+
+and answers with the argv to launch, and optionally another workspace:
+
+```json
+{"contract": 1, "argv": ["mailapp", "--open", "Inbox"], "workspace": "name:mail"}
+```
+
+`restore --dry-run` prints each relaunch reply verbatim, ahead of the launch
+it decided.
+
+### What a helper is trusted with
+
+A helper runs as you, unattended, at every save; what it returns reaches a
+command line. So hyprwake checks before it believes:
+
+- **The helper must be yours.** An absolute path (a leading `~/` is
+  expanded) to an executable file you own that neither group nor others can
+  write, in a directory nobody else can write. Symbolic links are followed
+  and the target is checked. Anything else is never run.
+- **Three seconds**, the same budget as a resume `id_command`. A helper that
+  takes longer is killed.
+- **A failure is a failure.** Non-zero exit, a reply that is not JSON, an
+  unknown key, a different contract version: the answer is discarded.
+- **argv is checked.** Not empty; the first element is a program, not a flag;
+  no more than 256 arguments of at most 4096 bytes; no control characters,
+  so nothing can end or split a line. Shell syntax is fine — every argument
+  is quoted on its way to the compositor, so `$(…)` arrives as a literal
+  argument.
+- **A workspace must be a selector** as Hyprland's dispatchers take it: `3`,
+  `name:mail`, `special:magic`. `"3 silent"` or anything with a space is
+  refused.
+
+Whatever is refused, the window is still saved and restored — from its own
+argv, exactly as if no provider claimed it — and the reason is in the log,
+in the restore report, and in `doctor`. `hyprwake providers <class>` shows
+whether each helper will run.
+
+### Why not for session managers
+
+tmux, zellij and herdr run *inside* a terminal; their window class is the
+terminal's. A provider claimed by window class never sees them. The hook for
+those is the resume layer above, which already runs helpers per program.
