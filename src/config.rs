@@ -343,9 +343,17 @@ fn default_tui_programs() -> Vec<String> {
         "weechat",
         "cmus",
         "ncmpcpp",
+        // A session manager, not a resumable TUI: its server owns the panes
+        // and restores them itself, so relaunching the client with the argv
+        // it was started with is the whole integration. Verified against
+        // herdr 0.8.2: `--session <name>` survives in /proc/<pid>/cmdline, and
+        // both `herdr --session <name>` and `herdr session attach <name>`
+        // restart a stopped session. The descendant search stops at the
+        // client, so nothing inside herdr is ever reconstructed twice.
         "herdr",
         "claude",
         "codex",
+        "opencode",
     ]
     .into_iter()
     .map(String::from)
@@ -402,6 +410,48 @@ fn default_resume_rules() -> HashMap<String, ResumeConfig> {
             args: vec!["resume".to_string(), "{id}".to_string()],
             fallback: vec!["resume".to_string(), "--last".to_string()],
             strip_flags: vec!["resume".to_string(), "--last".to_string()],
+        },
+    );
+    // opencode keeps its sessions in SQLite, one row per conversation, keyed
+    // by the directory it was started in. No shell: sqlite3 is run directly
+    // and the query is an ordinary argument. Validated against 1.18.32:
+    //
+    // - `directory` is the physical working directory (what /proc/<pid>/cwd
+    //   reports), not the git worktree root — even when entered through a
+    //   symlink.
+    // - Subagent runs are child sessions sharing their parent's directory,
+    //   and are usually the newest row. Without `parent_id IS NULL` the
+    //   restored terminal resumes *into a subagent*.
+    // - `mode=ro` reads fine while opencode holds the database in WAL mode.
+    // - `--session <id>` resumes in place; it forks only with `--fork`.
+    // - `--continue` skips child sessions, but inside a git repository it is
+    //   project-wide rather than per-directory: it can pick a sibling
+    //   directory's conversation. Acceptable as the fallback, which is only
+    //   reached when the exact lookup fails.
+    // - `--prompt` is stripped: replaying it would resend the prompt on
+    //   every restore.
+    rules.insert(
+        "opencode".to_string(),
+        ResumeConfig {
+            fd_glob: None,
+            id_command: vec![
+                "sqlite3".to_string(),
+                "file:{home}/.local/share/opencode/opencode.db?mode=ro".to_string(),
+                "SELECT id FROM session WHERE directory = '{cwd_sql}' \
+                 AND parent_id IS NULL AND time_archived IS NULL \
+                 ORDER BY time_updated DESC LIMIT 1;"
+                    .to_string(),
+            ],
+            args: vec!["--session".to_string(), "{id}".to_string()],
+            fallback: vec!["--continue".to_string()],
+            strip_flags: vec![
+                "--session".to_string(),
+                "-s".to_string(),
+                "--continue".to_string(),
+                "-c".to_string(),
+                "--fork".to_string(),
+                "--prompt".to_string(),
+            ],
         },
     );
     rules
@@ -846,11 +896,45 @@ args = ["--session", "{id}"]
     }
 
     #[test]
+    fn the_opencode_rule_resolves_awkward_directories_as_data() {
+        if which::which("sqlite3").is_err() {
+            eprintln!("skipped: sqlite3 not installed");
+            return;
+        }
+        let home = tempfile::TempDir::new().unwrap();
+        let marker = home.path().join("executed");
+        let dir = home.path().join(".local/share/opencode");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut sql = String::from(
+            "CREATE TABLE session (id TEXT, directory TEXT, parent_id TEXT, \
+             time_archived INTEGER, time_updated INTEGER);",
+        );
+        for (i, (cwd, id)) in AWKWARD.iter().enumerate() {
+            let cwd = sql_quote(&cwd.replace("{m}", &marker.to_string_lossy()));
+            sql.push_str(&format!(
+                "INSERT INTO session VALUES ('{id}', '{cwd}', NULL, NULL, {i});"
+            ));
+            // A newer subagent session in the same directory, as opencode
+            // writes one per Task call: it must never be the one resumed.
+            sql.push_str(&format!(
+                "INSERT INTO session VALUES ('{id}-child', '{cwd}', '{id}', NULL, {});",
+                i + 100
+            ));
+            // And a newer archived one, likewise.
+            sql.push_str(&format!(
+                "INSERT INTO session VALUES ('{id}-archived', '{cwd}', NULL, 1, {});",
+                i + 200
+            ));
+        }
+        assert!(sqlite(&dir.join("opencode.db"), &sql));
+        check_rule_against("opencode", home.path(), AWKWARD);
+    }
+
+    #[test]
     fn a_missing_database_falls_back_rather_than_failing() {
         let home = tempfile::TempDir::new().unwrap();
         let c: Config = toml::from_str("").unwrap();
-        {
-            let name = "codex";
+        for name in ["codex", "opencode"] {
             let rule = c.tui.resume.get(name).unwrap();
             let command = crate::resume::render_command(
                 &rule.id_command,
@@ -865,6 +949,13 @@ args = ["--session", "{id}"]
             );
             assert!(!rule.fallback.is_empty(), "{name} has a fallback");
         }
+        assert!(
+            !home
+                .path()
+                .join(".local/share/opencode/opencode.db")
+                .exists(),
+            "a read-only lookup must never create the database"
+        );
     }
 
     #[test]

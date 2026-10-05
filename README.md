@@ -201,7 +201,7 @@ extra_args = []              # e.g. an --app-id that pins the window class
 programs = ["nvim", "yazi", "btop"]   # relaunched inside their terminal
 
 # Programs that can reopen a specific session. Two strategies, tried in
-# order; both rules below ship by default.
+# order; every rule below ships by default.
 #
 # fd_glob reads the id out of a path the running program holds open — exact,
 # so several sessions in one directory each come back as themselves.
@@ -214,8 +214,14 @@ strip_flags = ["--resume", "-c", "--continue"]
 # id_command suits programs that keep sessions in a database and expose
 # nothing per-process. It runs as you, at save time, with a 3s timeout;
 # {cwd}, {cwd_sql} (quotes doubled) and {home} are substituted, and the id
-# is validated before it reaches a command line.
-#
+# is validated before it reaches a command line. Run the helper directly
+# where you can:
+[tui.resume.opencode]
+id_command = ["sqlite3", "file:{home}/.local/share/opencode/opencode.db?mode=ro",
+              "SELECT id FROM session WHERE directory = '{cwd_sql}' AND parent_id IS NULL ..."]
+args = ["--session", "{id}"]
+fallback = ["--continue"]
+
 # When a shell is unavoidable, hand values to it as positional parameters —
 # never write a placeholder inside the script text. A directory can be named
 # `$(...)`, and a script would run it. hyprwake refuses to splice a directory

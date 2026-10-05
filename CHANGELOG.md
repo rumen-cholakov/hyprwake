@@ -30,6 +30,11 @@
   `hyprwake status` and `doctor` report the schema. Snapshots also record each
   monitor's make, model, serial, scale and position, so a display can later be
   recognised on a different port.
+- **opencode conversations come back.** opencode is now reopened inside its
+  terminal and resumed with `--session <id>`, looked up in its own database by
+  directory. Subagent runs, which opencode records as child sessions in the
+  same directory and which are usually the newest row, are never the one
+  resumed. `--continue` is the fallback.
 
 ### Fixes
 
