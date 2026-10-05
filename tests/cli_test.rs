@@ -17,6 +17,7 @@ fn help_lists_the_main_commands() {
         .stdout(contains("diff"))
         .stdout(contains("watch"))
         .stdout(contains("status"))
+        .stdout(contains("providers"))
         .stdout(contains("doctor"));
 }
 
@@ -66,4 +67,55 @@ fn deleting_a_missing_session_fails_cleanly() {
         .assert()
         .failure()
         .stderr(contains("not found"));
+}
+
+/// A hyprwake whose config directory is `dir`, so a test controls the
+/// providers it sees without touching the real `~/.config`.
+fn hyprwake_with_config(dir: &tempfile::TempDir, config: &str) -> Command {
+    let conf = dir.path().join("hyprwake");
+    std::fs::create_dir_all(&conf).unwrap();
+    std::fs::write(conf.join("config.toml"), config).unwrap();
+    let mut cmd = hyprwake();
+    cmd.env("XDG_CONFIG_HOME", dir.path());
+    cmd
+}
+
+#[test]
+fn providers_lists_the_builtins_and_the_fallback() {
+    let dir = tempfile::TempDir::new().unwrap();
+    hyprwake_with_config(&dir, "")
+        .arg("providers")
+        .assert()
+        .success()
+        .stdout(contains("org.omarchy.terminal"))
+        .stdout(contains("generic"))
+        .stdout(contains("(any other class)"))
+        .stdout(contains("opencode (by lookup)"));
+}
+
+#[test]
+fn providers_explains_one_class() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config =
+        "[providers.jet]\nkind = \"command\"\nclasses = [\"jetbrains-*\"]\nspawn = false\n";
+    hyprwake_with_config(&dir, config)
+        .args(["providers", "jetbrains-idea"])
+        .assert()
+        .success()
+        .stdout(contains("jetbrains-idea → jet (command, [providers])"))
+        .stdout(contains("matches the pattern \"jetbrains-*\""))
+        .stdout(contains("never launched"));
+}
+
+#[test]
+fn providers_reports_declaration_problems() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config = "[providers.a]\nkind = \"command\"\nclasses = [\"x\"]\n\
+                  [providers.b]\nkind = \"command\"\nclasses = [\"x\"]\n";
+    hyprwake_with_config(&dir, config)
+        .arg("providers")
+        .assert()
+        .success()
+        .stdout(contains("Problems:"))
+        .stdout(contains("claimed by both"));
 }

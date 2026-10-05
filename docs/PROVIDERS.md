@@ -1,0 +1,207 @@
+# Providers
+
+A *provider* decides how a window of a given class is captured and brought
+back. `hyprwake providers` lists every provider in effect and where it was
+declared; `hyprwake providers <class>` explains how one class resolves. Paste
+that output into a compatibility report — it is most of what a maintainer
+needs to know.
+
+## The model
+
+The **mechanisms** are a closed set, built into hyprwake:
+
+| `kind` | What it does |
+|---|---|
+| `terminal` | Reopen the terminal at its shell's directory. If a program from `[tui] programs` was running in it, reopen that program inside it — resumed on its own session where `[tui.resume]` knows how. |
+| `chromium` | A Chromium-family browser. Profiles are read from `Local State` and each mapped profile is reopened with `--profile-directory`. |
+| `firefox` | A Firefox-family browser. Profiles are read from `profiles.ini` and each mapped profile is reopened by name with `-P`. |
+| `command` | Replay the window's own argv from `/proc`, optionally with a different binary or some arguments stripped. |
+
+The **instances** are yours, declared in `~/.config/hyprwake/config.toml`:
+
+```toml
+[providers.wezterm]
+kind = "terminal"
+classes = ["org.wezfurlong.wezterm"]
+binary = "wezterm"
+cwd_flag = "--cwd"              # a trailing "=" joins flag and value
+exec_flag = "-e"                # what introduces a program, if anything
+extra_args = []                 # e.g. an --app-id that pins the window class
+
+[providers.brave]
+kind = "chromium"
+classes = ["brave-browser"]
+binary = "brave"
+local_state = "BraveSoftware/Brave-Browser/Local State"   # under ~/.config
+profile_workspaces = { "Default" = "2", "Profile 1" = "6" }
+restore_last_session = false    # see below
+
+[providers.zen]
+kind = "firefox"
+classes = ["zen", "zen-alpha"]
+binary = "zen-browser"
+profiles_ini = ".zen/profiles.ini"                         # under ~
+profile_workspaces = { "default" = "2" }
+
+[providers.jetbrains]
+kind = "command"
+classes = ["jetbrains-*"]       # a trailing * matches a prefix
+strip_args = ["-Dtmp.session"]  # dropped by prefix
+spawn = false                   # record the window, never launch it
+```
+
+Every entry takes `classes` and optionally `spawn`. A `chromium`, `firefox` or
+`command` entry with a key it does not know is a load error, with the line
+number — so `restore_last_session` on a Firefox browser, or `strip_arg` for
+`strip_args`, fails loudly instead of doing nothing. A `terminal` entry ignores
+unknown keys, because it shares its fields with the legacy `[terminals]`
+table and a config that loaded under 0.1.3 must still load.
+
+A mechanism that is not in the table needs Rust. An instance never does.
+
+## Which provider wins
+
+Resolution does not depend on the order of tables in the file:
+
+1. an exact class claimed in `[providers]`
+2. an exact class claimed anywhere else (built-in, `[terminals]`, `[apps]`,
+   `[browsers]`)
+3. the longest matching `*` pattern
+4. `generic`, which replays the window's own argv
+
+Two `[providers]` entries claiming the same exact class is reported, and the
+first key in sort order wins. `hyprwake providers` and `hyprwake doctor` both
+show such problems.
+
+A `[providers]` entry adds to the built-ins rather than replacing them; one
+whose key matches a built-in (say `[providers.foot]`) redefines it.
+
+## The legacy tables
+
+`[terminals]`, `[apps]` and `[browsers]` still work, unchanged, and are read
+into the same set. They keep their 0.1.3 meaning exactly — a test pins the
+argv they produce:
+
+- Listing any `[terminals]` entry replaces the whole built-in terminal table.
+- An `[apps]` entry for a terminal's class only contributes `no_spawn`.
+- An `[apps]` entry for a browser's class still applies its `binary`,
+  `strip_args` and `no_spawn` to that browser's window argv.
+
+## Session managers own their contents
+
+herdr, tmux, zellij and screen keep panes alive in a server of their own.
+hyprwake restores the terminal and the attach; the session manager restores
+everything inside it. hyprwake never reconstructs a pane itself, which would
+duplicate it.
+
+This falls out of how capture works: the search for a program inside a
+terminal stops at the first match, which is the session manager's client, and
+never descends into its panes.
+
+## Resume rules
+
+`[tui.resume.<program>]` recovers the session a program inside a terminal was
+in, and asks it to reopen it. The key is the program's process name as the
+kernel reports it (`/proc/<pid>/comm`).
+
+- `fd_glob` reads the id out of a path the program holds open. Exact.
+- `id_command` runs a helper that prints the id for a directory. `{cwd}`,
+  `{cwd_sql}` (single quotes doubled) and `{home}` are substituted. It runs as
+  you, at every save, with a 3-second timeout, and the id it prints is checked
+  before it reaches a command line.
+
+**Never write a placeholder inside shell script text.** A directory can be
+named `$(…)`, and a script would run it. Run the helper directly where you
+can, and when a shell is unavoidable pass values as positional parameters:
+
+```toml
+# Safe: the query is an ordinary argument, no shell involved.
+id_command = ["sqlite3", "file:{home}/.x/db?mode=ro",
+              "SELECT id FROM s WHERE dir = '{cwd_sql}'"]
+
+# Safe: $1 and $2 are never parsed as shell.
+id_command = ["sh", "-c", "exec sqlite3 \"$1\" \"$2\"",
+              "sh", "{home}/.x/db", "SELECT id FROM s WHERE dir = '{cwd_sql}'"]
+
+# UNSAFE, and refused: {cwd_sql} inside the script.
+id_command = ["sh", "-c", "sqlite3 db \"SELECT … '{cwd_sql}'\""]
+```
+
+hyprwake refuses to substitute a directory containing `$`, `` ` ``, quotes,
+`;`, `&`, `|`, `<`, `>`, parentheses, braces or control characters into the
+script argument of `sh -c`, `bash -c`, `python -c`, `perl -e`, `node -e` and
+similar; the rule falls back instead. 0.1.0 to 0.1.3 shipped a codex rule
+that did exactly this — see the 0.2.0 changelog.
+
+## What ships, and why
+
+A shipped default has to keep working across upstream releases nobody here
+controls, so the bar is: packaged for Arch or with a mainstream installer,
+validated on a real machine, and degrading to today's behaviour when stale.
+Anything else is a recipe below. "Validated" means against a real install,
+with the version recorded.
+
+### AI agent TUIs
+
+| Program | Status | Notes |
+|---|---|---|
+| claude | shipped | `fd_glob` on the per-session directory it holds open; `--continue` fallback. |
+| codex | shipped | `id_command` on its state database; `resume --last` fallback. Fixed in 0.2.0 not to splice the directory into a shell script. |
+| opencode | shipped | Validated against 1.18.32. `id_command` on `~/.local/share/opencode/opencode.db`, no shell. Excludes child sessions, which opencode writes for every subagent run in the parent's directory and which are usually the newest row. `--continue` fallback, which inside a git repository is project-wide rather than per-directory. |
+| crush | recipe | Resumes with `--session <id>`; `crush session last --cwd <dir>` is a candidate lookup. Not shipped: never used on the validation machine, so there are no sessions to check against, and `crush session` talks to a crush server socket — whether a lookup starts one is unconfirmed. |
+| gemini | not shipped | A Node program, so its process name is `node`, which `[tui] programs` cannot tell apart from any other Node program. It also resumes by *index* (`--resume 5`), which shifts as sessions are added. Matching programs by their script name as well as their process name would fix the first half; that is a separate change. |
+| aider, goose, amp | recipe | Not installed on the validation machine. aider (Python) and amp (Node) have the same process-name problem as gemini. |
+
+### Session managers
+
+| Program | Status | Notes |
+|---|---|---|
+| herdr | shipped | Validated against 0.8.2. Needs nothing: `--session <name>` survives in the client's argv and is replayed, and both `herdr --session <name>` and `herdr session attach <name>` restart a stopped session with its workspaces. |
+| tmux | recipe | Not in `[tui] programs`, so a terminal running tmux comes back as a shell at the host shell's directory. Adding it is not enough on its own: the client's process name is `tmux: client`, not `tmux` (verified against tmux on the validation machine), and its server does not survive a reboot, so a replayed `tmux attach -t work` fails and the terminal closes. The right shape is a rule that rewrites any attach into `tmux new-session -A -s <name>` — which is also what brings the contents back under tmux-resurrect — but recovering `<name>` robustly needs the client's server socket. Unshipped. |
+| zellij, screen, abduco | recipe | Not installed on the validation machine. |
+
+### Terminals
+
+foot, the Omarchy terminal (foot with its own app-id), kitty, Alacritty and
+Ghostty ship. wezterm, rio, contour, konsole, gnome-terminal, xterm and st are
+not installed on the validation machine, so their flags have not been checked
+against their own `--help`, which is the bar for shipping. Declare them with
+`kind = "terminal"`. A terminal that sets its window class from a flag needs
+that flag in `extra_args`, as the Omarchy terminal's `--app-id` does, or a
+relaunched window will not be recognised as the saved one.
+
+### Browsers
+
+Chromium-family and Firefox-family browsers need no new mechanism. Google
+Chrome and Chromium are confirmed on the validation machine; the other
+entries `hyprwake config --init` knows about (Brave, Edge, Vivaldi, Firefox,
+Zen, LibreWolf) are offered only when their profile file exists.
+
+`restore_last_session = true` passes `--restore-last-session`, so each
+profile reopens its tabs even when its own startup setting is "Open the New
+Tab page". It is off by default, because it overrides a preference you may
+have set on purpose. **Its behaviour is not yet validated**: on a cold start,
+with the browser already running, after an unclean exit, and across several
+profiles. Firefox has no equivalent switch — only its `browser.startup.page`
+preference — so the option does not exist for `kind = "firefox"`.
+
+### Out of scope for 0.2.0
+
+- **Editor sessions.** nvim, helix and emacs are reopened at the right
+  directory but not at the right session (`Session.vim`, desktop.el). That is
+  a third mechanism, neither `fd_glob` nor `id_command`.
+- **Remote shells and containers.** A terminal running `ssh`, `docker exec`,
+  `distrobox enter` or `toolbox enter` comes back as a local shell where the
+  host shell stood — the remote or container shell is not a descendant of the
+  terminal, so the local directory is what is captured, and it exists.
+  Reconnecting automatically at boot is deliberately not done.
+
+## Not built: external providers
+
+The 0.2.0 plan proposed a `kind = "external"` provider that delegates capture
+and relaunch to a helper speaking JSON. It is not in 0.2.0. Its motivating
+case was session managers, but those are programs *inside* a terminal, not
+window classes, so a provider claimed by class cannot capture them — the
+right hook for them is the resume layer, which already runs helpers. Whether
+an external kind is still worth its trust boundary for applications with a
+window class of their own is an open decision.

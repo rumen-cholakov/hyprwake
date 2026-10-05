@@ -53,6 +53,7 @@ pub fn known_browsers() -> HashMap<String, BrowserConfig> {
                     profiles_ini: String::new(),
                     profile_workspaces: HashMap::new(),
                     default_workspace: None,
+                    restore_last_session: false,
                 },
             )
         })
@@ -76,6 +77,7 @@ pub fn known_browsers() -> HashMap<String, BrowserConfig> {
                 profiles_ini: ini.to_string(),
                 profile_workspaces: HashMap::new(),
                 default_workspace: None,
+                restore_last_session: false,
             },
         )
     }));
@@ -201,10 +203,17 @@ pub fn assign_workspaces(
 
 pub fn profile_argv(config: &BrowserConfig, profile: &BrowserProfile) -> Vec<String> {
     match config.kind {
-        BrowserKind::Chromium => vec![
-            config.binary.clone(),
-            format!("--profile-directory={}", profile.directory),
-        ],
+        BrowserKind::Chromium => {
+            let mut argv = vec![
+                config.binary.clone(),
+                format!("--profile-directory={}", profile.directory),
+            ];
+            // Opt-in: it overrides the profile's own startup preference.
+            if config.restore_last_session {
+                argv.push("--restore-last-session".to_string());
+            }
+            argv
+        }
         // -P selects by name; --new-window is what makes a second profile
         // open its own window rather than raising the running one.
         BrowserKind::Firefox => vec![
@@ -241,6 +250,7 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             default_workspace: None,
+            restore_last_session: false,
         }
     }
 
@@ -297,6 +307,27 @@ mod tests {
     }
 
     #[test]
+    fn restore_last_session_is_opt_in() {
+        let profile = BrowserProfile {
+            class: "google-chrome".to_string(),
+            directory: "Profile 1".to_string(),
+            name: "Work".to_string(),
+            workspace: "6".to_string(),
+        };
+        let mut config = config_with(&[("Profile 1", "6")]);
+        assert!(!profile_argv(&config, &profile).contains(&"--restore-last-session".to_string()));
+        config.restore_last_session = true;
+        assert_eq!(
+            profile_argv(&config, &profile),
+            vec![
+                "google-chrome-stable",
+                "--profile-directory=Profile 1",
+                "--restore-last-session"
+            ]
+        );
+    }
+
+    #[test]
     fn profile_argv_names_the_directory() {
         let profiles = parse_profiles("google-chrome", LOCAL_STATE).unwrap();
         let p = profiles
@@ -340,6 +371,7 @@ StartWithLastProfile=1
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             default_workspace: None,
+            restore_last_session: false,
         }
     }
 

@@ -110,6 +110,11 @@ enum Commands {
         #[arg(short, long, value_name = "PATH")]
         output: Option<std::path::PathBuf>,
     },
+    /// Show which provider handles each window class, and why
+    Providers {
+        /// Explain how this one window class resolves
+        class: Option<String>,
+    },
     /// Check what would be saved and restored right now
     Doctor {
         /// Emit checks as JSON for scripts and compatibility reports
@@ -156,6 +161,7 @@ fn main() -> ExitCode {
         Commands::Uninstall => cmd_uninstall(),
         Commands::Status => cmd_status(&config, &dir),
         Commands::SupportBundle { output } => cmd_support_bundle(output, &config, &dir),
+        Commands::Providers { class } => cmd_providers(class, &config),
         Commands::Doctor { json } => cmd_doctor(&config, &dir, json),
     }
 }
@@ -419,9 +425,13 @@ fn cmd_config(init: bool, force: bool, config: &Config) -> ExitCode {
         println!("Log:      {}", hyprwake::logging::log_path().display());
         println!();
         println!("Terminals recognised: {}", {
-            let mut keys: Vec<_> = config.terminals.keys().cloned().collect();
-            keys.sort();
-            keys.join(", ")
+            let providers = hyprwake::provider::ProviderSet::from_config(config);
+            let mut classes: Vec<_> = providers
+                .terminals()
+                .flat_map(|(p, _)| p.entry.classes.clone())
+                .collect();
+            classes.sort();
+            classes.join(", ")
         });
         println!("Launch through uwsm:  {}", config.use_uwsm());
         if !path.exists() {
@@ -459,11 +469,18 @@ fn cmd_config(init: bool, force: bool, config: &Config) -> ExitCode {
 }
 
 /// A config file describing what is actually installed on this machine.
+///
+/// Written in the `[providers]` form. Terminals are only listed: the
+/// built-in providers already handle every one found, and a `[providers]`
+/// entry adds to the built-ins rather than replacing them, so repeating them
+/// would only shadow identical defaults.
 fn seeded_config() -> String {
     let defaults: Config = toml::from_str("").expect("defaults parse");
+    let providers = hyprwake::provider::ProviderSet::from_config(&defaults);
     let mut out = String::from(
         "# hyprwake configuration\n\
-         # Every key is optional; what follows was detected on this machine.\n\n",
+         # Every key is optional; what follows was detected on this machine.\n\
+         # `hyprwake providers` shows which provider handles each window class.\n\n",
     );
 
     out.push_str("[general]\n");
@@ -482,60 +499,83 @@ fn seeded_config() -> String {
         which::which("uwsm-app").is_ok()
     ));
 
-    let mut terminals: Vec<_> = defaults
-        .terminals
-        .iter()
+    let mut found: Vec<String> = providers
+        .terminals()
         .filter(|(_, t)| which::which(&t.binary).is_ok())
+        .flat_map(|(p, _)| p.entry.classes.clone())
         .collect();
-    terminals.sort_by_key(|(class, _)| class.to_string());
-    if !terminals.is_empty() {
-        out.push_str("# Terminals found here. Listing any replaces the built-in table,\n");
-        out.push_str("# so keep every terminal you use.\n");
-        for (class, term) in terminals {
-            out.push_str(&format!("[terminals.\"{class}\"]\n"));
-            out.push_str(&format!("binary = \"{}\"\n", term.binary));
-            out.push_str(&format!("cwd_flag = \"{}\"\n", term.cwd_flag));
-            if let Some(exec) = &term.exec_flag {
-                out.push_str(&format!("exec_flag = \"{exec}\"\n"));
-            }
-            if !term.extra_args.is_empty() {
-                out.push_str(&format!(
-                    "extra_args = [{}]\n",
-                    term.extra_args
-                        .iter()
-                        .map(|a| format!("\"{a}\""))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-            }
+    found.sort();
+    if found.is_empty() {
+        out.push_str("# No terminal with a built-in provider is installed here.\n");
+    } else {
+        out.push_str(&format!(
+            "# Terminals found here, handled by built-in providers: {}.\n",
+            found.join(", ")
+        ));
+    }
+    out.push_str("# To add another, declare it; see docs/PROVIDERS.md.\n");
+    out.push_str(&commented(TERMINAL_EXAMPLE));
+    out.push('\n');
+
+    let mut browsers: Vec<_> = hyprwake::browsers::known_browsers()
+        .into_iter()
+        .filter(|(_, b)| hyprwake::browsers::state_path(b).exists())
+        .collect();
+    browsers.sort_by(|a, b| a.0.cmp(&b.0));
+    if !browsers.is_empty() {
+        out.push_str("# Browsers found here. Map profiles to workspaces to have each profile\n");
+        out.push_str("# reopened in its own window; without a mapping the browser is restored\n");
+        out.push_str("# as an ordinary window.\n");
+        for (class, browser) in browsers {
+            out.push_str(&commented(&browser_example(&class, &browser)));
             out.push('\n');
         }
     }
+    out
+}
 
-    out.push_str("# Chromium-family browsers: map profiles to workspaces to have each\n");
-    out.push_str("# profile reopened in its own window. Without a mapping the browser is\n");
-    out.push_str("# restored as an ordinary window.\n");
-    for (class, browser) in hyprwake::browsers::known_browsers() {
-        if !hyprwake::browsers::state_path(&browser).exists() {
-            continue;
+const TERMINAL_EXAMPLE: &str = "[providers.wezterm]
+kind = \"terminal\"
+classes = [\"org.wezfurlong.wezterm\"]
+binary = \"wezterm\"
+cwd_flag = \"--cwd\"
+";
+
+/// A `[providers]` entry for a detected browser, uncommented.
+fn browser_example(class: &str, browser: &hyprwake::config::BrowserConfig) -> String {
+    let mut out = format!(
+        "[providers.\"{class}\"]\nclasses = [\"{class}\"]\nbinary = \"{}\"\n",
+        browser.binary
+    );
+    match browser.kind {
+        hyprwake::config::BrowserKind::Chromium => {
+            out.push_str("kind = \"chromium\"\n");
+            out.push_str(&format!("local_state = \"{}\"\n", browser.local_state));
+            out.push_str("profile_workspaces = { \"Default\" = \"2\" }\n");
+            out.push_str("# Reopen each profile's tabs whatever its startup setting says.\n");
+            out.push_str("restore_last_session = false\n");
         }
-        out.push_str(&format!("# [browsers.\"{class}\"]\n"));
-        out.push_str(&format!("# binary = \"{}\"\n", browser.binary));
-        match browser.kind {
-            hyprwake::config::BrowserKind::Chromium => {
-                out.push_str("# kind = \"chromium\"\n");
-                out.push_str(&format!("# local_state = \"{}\"\n", browser.local_state));
-                out.push_str("# profile_workspaces = { \"Default\" = \"2\" }\n\n");
-            }
-            hyprwake::config::BrowserKind::Firefox => {
-                out.push_str("# kind = \"firefox\"\n");
-                out.push_str(&format!("# profiles_ini = \"{}\"\n", browser.profiles_ini));
-                out.push_str("# profile_workspaces = { \"default-release\" = \"2\" }\n\n");
-            }
+        hyprwake::config::BrowserKind::Firefox => {
+            out.push_str("kind = \"firefox\"\n");
+            out.push_str(&format!("profiles_ini = \"{}\"\n", browser.profiles_ini));
+            out.push_str("profile_workspaces = { \"default-release\" = \"2\" }\n");
         }
     }
-
     out
+}
+
+/// Comment out every line, keeping comments that are already comments.
+fn commented(block: &str) -> String {
+    block
+        .lines()
+        .map(|l| {
+            if l.starts_with('#') {
+                format!("{l}\n")
+            } else {
+                format!("# {l}\n")
+            }
+        })
+        .collect()
 }
 
 fn cmd_watch(name: Option<String>, replace: bool, config: &Config, dir: &Path) -> ExitCode {
@@ -794,6 +834,113 @@ fn cmd_support_bundle(output: Option<std::path::PathBuf>, config: &Config, dir: 
     }
 }
 
+/// What a compatibility report needs: which mechanism applies to which class,
+/// and where that was declared.
+fn cmd_providers(class: Option<String>, config: &Config) -> ExitCode {
+    use hyprwake::provider::{Match, ProviderSet, ProviderSpec, GENERIC};
+    let providers = ProviderSet::from_config(config);
+
+    if let Some(class) = class {
+        let r = providers.resolve(&class);
+        let how = match &r.matched {
+            Match::Exact => "claimed exactly".to_string(),
+            Match::Pattern(p) => format!("matches the pattern \"{p}\""),
+            Match::Generic => "nothing claims it, so its own argv is replayed".to_string(),
+        };
+        println!(
+            "{class} → {} ({}, {}): {how}",
+            r.key,
+            r.spec.kind(),
+            r.source.label()
+        );
+        if !r.spawn {
+            println!("  recorded but never launched (spawn = false)");
+        }
+        if matches!(r.spec, ProviderSpec::Terminal(_)) {
+            println!("  a TUI running inside it is reopened too; `hyprwake providers` lists which");
+        }
+        if r.spec
+            .browser()
+            .is_some_and(|b| b.profile_workspaces.is_empty())
+        {
+            println!("  no profile_workspaces, so it is restored as an ordinary window");
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let rows: Vec<[String; 5]> = providers
+        .providers()
+        .iter()
+        .map(|p| {
+            [
+                p.key.clone(),
+                p.entry.spec.kind().to_string(),
+                p.entry.classes.join(", "),
+                if p.entry.spawn { "yes" } else { "no" }.to_string(),
+                p.source.label().to_string(),
+            ]
+        })
+        .chain(std::iter::once([
+            GENERIC.to_string(),
+            "command".to_string(),
+            "(any other class)".to_string(),
+            "yes".to_string(),
+            "built-in".to_string(),
+        ]))
+        .collect();
+    let header = ["KEY", "KIND", "CLASSES", "SPAWN", "SOURCE"];
+    let widths: Vec<usize> = (0..4)
+        .map(|i| {
+            rows.iter()
+                .map(|r| r[i].chars().count())
+                .chain(std::iter::once(header[i].len()))
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    let line = |r: [&str; 5]| {
+        println!(
+            "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {}",
+            r[0],
+            r[1],
+            r[2],
+            r[3],
+            r[4],
+            w0 = widths[0],
+            w1 = widths[1],
+            w2 = widths[2],
+            w3 = widths[3]
+        )
+    };
+    line(header);
+    for r in &rows {
+        line([&r[0], &r[1], &r[2], &r[3], &r[4]]);
+    }
+
+    println!();
+    println!("Reopened inside a terminal, resumed where the program allows it:");
+    let mut programs: Vec<String> = config
+        .tui_programs()
+        .into_iter()
+        .map(|p| match config.tui.resume.get(&p) {
+            Some(rule) if rule.fd_glob.is_some() => format!("{p} (by open file)"),
+            Some(_) => format!("{p} (by lookup)"),
+            None => p,
+        })
+        .collect();
+    programs.sort();
+    println!("  {}", programs.join(", "));
+
+    if !providers.problems().is_empty() {
+        println!();
+        println!("Problems:");
+        for problem in providers.problems() {
+            println!("  {problem}");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn cmd_doctor(config: &Config, dir: &Path, json: bool) -> ExitCode {
     let checks = doctor::run(&RealHyprctl, &RealProcessInfo, config, dir);
     let failed = checks
@@ -821,5 +968,74 @@ fn cmd_doctor(config: &Config, dir: &Path, json: bool) -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hyprwake::provider::ProviderSet;
+
+    #[test]
+    fn the_seeded_config_parses_and_changes_nothing_builtin() {
+        let seeded: Config = toml::from_str(&seeded_config()).expect("seeded config parses");
+        let defaults: Config = toml::from_str("").unwrap();
+        let (a, b) = (
+            ProviderSet::from_config(&seeded),
+            ProviderSet::from_config(&defaults),
+        );
+        for class in [
+            "foot",
+            "org.omarchy.terminal",
+            "kitty",
+            "Alacritty",
+            "obsidian",
+        ] {
+            assert_eq!(a.resolve(class).key, b.resolve(class).key, "{class}");
+        }
+        assert!(a.problems().is_empty(), "{:?}", a.problems());
+    }
+
+    #[test]
+    fn every_commented_example_parses_once_uncommented() {
+        let chromium = hyprwake::config::BrowserConfig {
+            binary: "google-chrome-stable".into(),
+            kind: hyprwake::config::BrowserKind::Chromium,
+            local_state: "google-chrome/Local State".into(),
+            profiles_ini: String::new(),
+            profile_workspaces: Default::default(),
+            default_workspace: None,
+            restore_last_session: false,
+        };
+        let firefox = hyprwake::config::BrowserConfig {
+            binary: "zen-browser".into(),
+            kind: hyprwake::config::BrowserKind::Firefox,
+            local_state: String::new(),
+            profiles_ini: ".zen/profiles.ini".into(),
+            profile_workspaces: Default::default(),
+            default_workspace: None,
+            restore_last_session: false,
+        };
+        for (text, class, kind) in [
+            (
+                TERMINAL_EXAMPLE.to_string(),
+                "org.wezfurlong.wezterm",
+                "terminal",
+            ),
+            (
+                browser_example("google-chrome", &chromium),
+                "google-chrome",
+                "chromium",
+            ),
+            (
+                browser_example("zen-alpha", &firefox),
+                "zen-alpha",
+                "firefox",
+            ),
+        ] {
+            let config: Config = toml::from_str(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+            let set = ProviderSet::from_config(&config);
+            assert_eq!(set.resolve(class).spec.kind(), kind, "{text}");
+        }
     }
 }

@@ -5,7 +5,7 @@
 //! machine.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +24,10 @@ pub struct Config {
     pub apps: HashMap<String, AppConfig>,
     #[serde(default)]
     pub browsers: HashMap<String, BrowserConfig>,
+    /// Providers declared in the new form, keyed by name. Read together with
+    /// the legacy tables above into one [`ProviderSet`](crate::provider::ProviderSet).
+    #[serde(default)]
+    pub providers: BTreeMap<String, crate::provider::ProviderEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,7 +94,11 @@ pub struct FilterConfig {
 }
 
 /// How to reopen a terminal at a directory, and optionally running a program.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Unknown keys are ignored rather than rejected: this struct also reads the
+/// legacy `[terminals]` table, and a config that parsed under 0.1.3 must
+/// still parse.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TerminalConfig {
     pub binary: String,
     /// Flag introducing the working directory. A trailing `=` means the
@@ -191,6 +199,10 @@ pub struct BrowserConfig {
     pub profile_workspaces: HashMap<String, String>,
     #[serde(default)]
     pub default_workspace: Option<String>,
+    /// Chromium only: pass `--restore-last-session` so each profile reopens
+    /// its tabs whatever its startup setting says. Off by default.
+    #[serde(default)]
+    pub restore_last_session: bool,
 }
 
 // ── Defaults ───────────────────────────────────────────────────────────────
@@ -477,6 +489,7 @@ impl Default for Config {
             tui: TuiConfig::default(),
             apps: HashMap::new(),
             browsers: HashMap::new(),
+            providers: BTreeMap::new(),
         }
     }
 }

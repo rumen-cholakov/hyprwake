@@ -149,13 +149,15 @@ pub fn run(
     });
 
     // ── terminals ──
+    let providers = crate::provider::ProviderSet::from_config(config);
     let mut missing = Vec::new();
     let mut present = Vec::new();
-    for (class, term) in &config.terminals {
+    for (provider, term) in providers.terminals() {
+        let classes = provider.entry.classes.join(", ");
         if which::which(&term.binary).is_ok() {
-            present.push(class.clone());
+            present.push(classes);
         } else {
-            missing.push(format!("{class} ({})", term.binary));
+            missing.push(format!("{classes} ({})", term.binary));
         }
     }
     present.sort();
@@ -171,6 +173,18 @@ pub fn run(
     } else {
         Check::new("terminals", Status::Ok, present.join(", "))
     });
+
+    // ── provider declarations ──
+    if !providers.problems().is_empty() {
+        checks.push(Check::new(
+            "providers",
+            Status::Warn,
+            format!(
+                "{}; `hyprwake providers` lists them",
+                providers.problems().join("; ")
+            ),
+        ));
+    }
 
     // ── live windows ──
     match hyprctl.get_clients() {

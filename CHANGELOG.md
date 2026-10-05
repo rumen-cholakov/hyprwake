@@ -30,11 +30,37 @@
   `hyprwake status` and `doctor` report the schema. Snapshots also record each
   monitor's make, model, serial, scale and position, so a display can later be
   recognised on a different port.
+- **Providers.** Which mechanism captures and reopens a window class is now
+  declared rather than implied by the order of an if-else chain. The
+  mechanisms stay built in — `terminal`, `chromium`, `firefox`, `command` —
+  and instances are declared as `[providers.<name>]` with a `kind` and the
+  window `classes` they claim, including `prefix*` patterns. They add to the
+  built-ins. A wrong `kind`, a missing required field, or an option on the
+  wrong kind (`restore_last_session` on Firefox, a typo in `strip_args`) is a
+  load error with its line number instead of a silent no-op. See
+  [docs/PROVIDERS.md](docs/PROVIDERS.md).
+- **`hyprwake providers`** lists every provider in effect and where it was
+  declared; `hyprwake providers <class>` explains how one class resolves.
+  Declaration problems — two providers claiming one class — are shown there
+  and in `doctor`. Each saved window records which provider captured it.
+- **`restore_last_session`** on a Chromium provider passes
+  `--restore-last-session`, so each profile reopens its tabs whatever its own
+  startup setting is. Off by default, and not yet validated across a running
+  browser, an unclean exit or several profiles.
+- **`hyprwake config --init`** writes the new form. Terminals already handled
+  by a built-in provider are listed rather than repeated.
 - **opencode conversations come back.** opencode is now reopened inside its
   terminal and resumed with `--session <id>`, looked up in its own database by
   directory. Subagent runs, which opencode records as child sessions in the
   same directory and which are usually the newest row, are never the one
   resumed. `--continue` is the fallback.
+
+### Upgrading
+
+Nothing to do. `[terminals]`, `[apps]` and `[browsers]` keep working exactly
+as before — a test pins the argv they produce against 0.1.3 — and snapshots
+from 0.1.x load and restore unchanged. If you copied the codex resume rule
+from an earlier README, replace it with the current one (see Security).
 
 ### Fixes
 

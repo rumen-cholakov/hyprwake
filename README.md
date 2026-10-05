@@ -128,6 +128,7 @@ hyprwake autosave --now         # snapshot and rotate
 hyprwake status                 # concise restore/watcher health summary
 hyprwake doctor                 # check the whole pipeline
 hyprwake doctor --json          # same checks, structured for local scripts
+hyprwake providers [CLASS]      # which provider handles each window class
 hyprwake support-bundle         # sanitized diagnostic report for an issue
 hyprwake config --init          # write a config seeded from this machine
 ```
@@ -192,9 +193,15 @@ use_uwsm = true              # launch through uwsm-app (systemd scopes)
 [filters]
 ignore_classes = ["waybar", "wofi", "mako"]
 
-[terminals.foot]             # listing any terminal replaces the built-in table
-binary = "foot"
-cwd_flag = "-D"              # a trailing "=" joins flag and value
+# Providers decide how each window class is captured and reopened. The
+# built-ins cover foot, the Omarchy terminal, kitty, Alacritty and Ghostty;
+# anything else replays its own argv. These add to the built-ins.
+# `hyprwake providers` lists what is in effect; docs/PROVIDERS.md has the rest.
+[providers.wezterm]
+kind = "terminal"
+classes = ["org.wezfurlong.wezterm"]
+binary = "wezterm"
+cwd_flag = "--cwd"           # a trailing "=" joins flag and value
 extra_args = []              # e.g. an --app-id that pins the window class
 
 [tui]
@@ -233,21 +240,29 @@ args = ["resume", "{id}"]
 fallback = ["resume", "--last"]
 strip_flags = ["resume", "--last"]
 
-[apps.Spotify]
-no_spawn = true              # record the window, never launch it
+[providers.spotify]
+kind = "command"             # replay the window's own argv
+classes = ["Spotify"]
+spawn = false                # record the window, never launch it
 
-[browsers.google-chrome]
+[providers.chrome]
+kind = "chromium"            # profiles from Local State
+classes = ["google-chrome"]
 binary = "google-chrome-stable"
-kind = "chromium"                     # profiles from Local State
 local_state = "google-chrome/Local State"
 profile_workspaces = { "Default" = "2", "Work" = "6" }
 
-[browsers.zen]
+[providers.zen]
+kind = "firefox"             # profiles from profiles.ini, by name
+classes = ["zen", "zen-alpha"]
 binary = "zen-browser"
-kind = "firefox"                      # profiles from profiles.ini, by name
 profiles_ini = ".zen/profiles.ini"
 profile_workspaces = { "default" = "2", "work" = "6" }
 ```
+
+The `[terminals]`, `[apps]` and `[browsers]` tables from earlier releases
+still work unchanged — including `[terminals]` replacing the built-in terminal
+table when you list any — and are read into the same providers.
 
 ## What it cannot do
 

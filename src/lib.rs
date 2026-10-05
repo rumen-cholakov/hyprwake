@@ -9,6 +9,7 @@ pub mod logging;
 pub mod lua;
 pub mod omarchy;
 pub mod process;
+pub mod provider;
 pub mod restore;
 pub mod resume;
 pub mod save;

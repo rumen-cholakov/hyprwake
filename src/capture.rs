@@ -1,9 +1,10 @@
 //! Turning the live desktop into a [`Session`].
 
 use crate::browsers;
-use crate::config::{AppConfig, Config};
+use crate::config::{Config, TerminalConfig};
 use crate::hyprctl::{HyprClient, HyprctlClient, HyprctlError};
 use crate::process::ProcessInfoProvider;
+use crate::provider::{CommandConfig, ProviderSet, ProviderSpec, Resolution};
 use crate::session::{
     self, BrowserProfile, Identity, LaunchInfo, Monitor, Session, SessionClient, Workspace,
 };
@@ -43,7 +44,12 @@ pub fn capture_session(
         .map(|m| (m.id, m.name.clone()))
         .collect();
 
-    let browser_profiles = collect_browser_profiles(&raw_clients, config);
+    let providers = ProviderSet::from_config(config);
+    for problem in providers.problems() {
+        crate::logging::log(format!("providers: {problem}"));
+    }
+
+    let browser_profiles = collect_browser_profiles(&raw_clients, &providers);
     // Classes whose windows the browser itself will reopen, one per profile.
     let profile_driven: HashSet<&str> = browser_profiles.iter().map(|p| p.class.as_str()).collect();
 
@@ -56,17 +62,16 @@ pub fn capture_session(
         if !raw.is_restorable() || config.is_ignored(&raw.class) {
             continue;
         }
-        let Some(argv) = relaunch_argv(raw, process, config) else {
+        let resolution = providers.resolve(&raw.class);
+        let Some(argv) = launch_argv(raw, process, config, &resolution) else {
             // No argv means the process vanished between the query and the
             // read, or it is not ours to relaunch.
             continue;
         };
 
-        let app = config.apps.get(&raw.class);
         let first_of_process = seen_pids.insert(raw.pid);
-        let spawn = first_of_process
-            && !app.is_some_and(|a| a.no_spawn)
-            && !profile_driven.contains(raw.class.as_str());
+        let spawn =
+            first_of_process && resolution.spawn && !profile_driven.contains(raw.class.as_str());
 
         clients.push(SessionClient {
             class: raw.class.clone(),
@@ -90,7 +95,7 @@ pub fn capture_session(
             launch: LaunchInfo {
                 argv,
                 spawn,
-                provider: None,
+                provider: Some(resolution.key.to_string()),
                 provider_state: None,
             },
         });
@@ -190,42 +195,72 @@ pub fn relaunch_argv(
     process: &dyn ProcessInfoProvider,
     config: &Config,
 ) -> Option<Vec<String>> {
-    if let Some(term) = config.terminal_for(&client.class) {
-        let home = home_dir();
+    let providers = ProviderSet::from_config(config);
+    launch_argv(client, process, config, &providers.resolve(&client.class))
+}
 
-        // A TUI is the reason the terminal is open; reopen it in place.
-        if let Some(tui) =
-            process.find_descendant(client.pid, &config.tui_programs(), PROCESS_SEARCH_DEPTH)
-        {
-            let argv = process
-                .cmdline(tui)
-                .or_else(|| process.comm(tui).map(|c| vec![c]))?;
-            let mut argv: Vec<String> = argv
-                .into_iter()
-                .filter(|a| !VOLATILE_ARG_PREFIXES.iter().any(|p| a.starts_with(p)))
-                .collect();
-            let cwd = process
-                .cwd(tui)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or(home);
-            argv = with_resume_args(argv, tui, &cwd, process, config);
-            return Some(term.build_argv(&cwd, Some(&argv)));
+/// Dispatch on the mechanism the class resolved to. Adding a provider kind
+/// makes this `match` refuse to compile until the kind is handled.
+fn launch_argv(
+    client: &HyprClient,
+    process: &dyn ProcessInfoProvider,
+    config: &Config,
+    resolution: &Resolution<'_>,
+) -> Option<Vec<String>> {
+    match resolution.spec {
+        ProviderSpec::Terminal(term) => terminal_argv(client, process, config, term),
+        ProviderSpec::Chromium(_) | ProviderSpec::Firefox(_) | ProviderSpec::Command(_) => {
+            replayed_argv(client, process, &resolution.command())
         }
+    }
+}
 
-        // Otherwise reopen the terminal where its shell was standing.
-        let shell = process.find_descendant(client.pid, &config.shells(), PROCESS_SEARCH_DEPTH);
-        let cwd = shell
-            .and_then(|pid| process.cwd(pid))
-            .or_else(|| process.cwd(client.pid))
+/// A terminal reopened where it stood: running the TUI that was the reason it
+/// was open, resumed where the program knows how, or else at its shell's
+/// directory.
+fn terminal_argv(
+    client: &HyprClient,
+    process: &dyn ProcessInfoProvider,
+    config: &Config,
+    term: &TerminalConfig,
+) -> Option<Vec<String>> {
+    let home = home_dir();
+
+    if let Some(tui) =
+        process.find_descendant(client.pid, &config.tui_programs(), PROCESS_SEARCH_DEPTH)
+    {
+        let argv = process
+            .cmdline(tui)
+            .or_else(|| process.comm(tui).map(|c| vec![c]))?;
+        let mut argv: Vec<String> = argv
+            .into_iter()
+            .filter(|a| !VOLATILE_ARG_PREFIXES.iter().any(|p| a.starts_with(p)))
+            .collect();
+        let cwd = process
+            .cwd(tui)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or(home);
-        return Some(term.build_argv(&cwd, None));
+        argv = with_resume_args(argv, tui, &cwd, process, config);
+        return Some(term.build_argv(&cwd, Some(&argv)));
     }
 
+    let shell = process.find_descendant(client.pid, &config.shells(), PROCESS_SEARCH_DEPTH);
+    let cwd = shell
+        .and_then(|pid| process.cwd(pid))
+        .or_else(|| process.cwd(client.pid))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or(home);
+    Some(term.build_argv(&cwd, None))
+}
+
+/// The window's own argv, replayed, with the provider's overrides applied.
+fn replayed_argv(
+    client: &HyprClient,
+    process: &dyn ProcessInfoProvider,
+    command: &CommandConfig,
+) -> Option<Vec<String>> {
     let mut argv = split_blob_cmdline(process.cmdline(client.pid)?);
-    if let Some(app) = config.apps.get(&client.class) {
-        apply_app_overrides(&mut argv, app);
-    }
+    apply_overrides(&mut argv, command);
     if argv.is_empty() {
         return None;
     }
@@ -325,7 +360,7 @@ fn strip_flags(argv: Vec<String>, flags: &[String]) -> Vec<String> {
     out
 }
 
-fn apply_app_overrides(argv: &mut Vec<String>, app: &AppConfig) {
+fn apply_overrides(argv: &mut Vec<String>, app: &CommandConfig) {
     if let Some(binary) = &app.binary {
         if argv.is_empty() {
             argv.push(binary.clone());
@@ -338,21 +373,35 @@ fn apply_app_overrides(argv: &mut Vec<String>, app: &AppConfig) {
     }
 }
 
-/// Profile windows for every configured browser that is currently open.
-fn collect_browser_profiles(clients: &[HyprClient], config: &Config) -> Vec<BrowserProfile> {
-    let open: HashSet<&str> = clients
+/// Profile windows for every browser provider that has a window open.
+///
+/// Read once per provider, not once per class: a provider claiming both
+/// `zen` and `zen-alpha` reads one `profiles.ini`, and reading it twice would
+/// reopen every profile twice.
+fn collect_browser_profiles(
+    clients: &[HyprClient],
+    providers: &ProviderSet,
+) -> Vec<BrowserProfile> {
+    let mut open: Vec<&str> = clients
         .iter()
         .filter(|c| c.is_restorable())
         .map(|c| c.class.as_str())
         .collect();
+    open.sort();
+    open.dedup();
 
+    let mut read: HashSet<&str> = HashSet::new();
     let mut out = Vec::new();
-    for (class, browser) in &config.browsers {
-        if !open.contains(class.as_str()) || browser.profile_workspaces.is_empty() {
+    for class in open {
+        let resolution = providers.resolve(class);
+        let Some(browser) = resolution.spec.browser() else {
+            continue;
+        };
+        if browser.profile_workspaces.is_empty() || !read.insert(resolution.key) {
             continue;
         }
-        match browsers::read_profiles(class, browser) {
-            Ok(profiles) => out.extend(browsers::assign_workspaces(profiles, browser)),
+        match browsers::read_profiles(class, &browser) {
+            Ok(profiles) => out.extend(browsers::assign_workspaces(profiles, &browser)),
             Err(e) => {
                 eprintln!("hyprwake: could not read {class} profiles: {e}");
                 crate::logging::log(format!("browser profile read failed for {class}: {e}"));
@@ -372,6 +421,7 @@ fn home_dir() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AppConfig;
     use crate::hyprctl::mock::MockHyprctl;
     use crate::process::mock::MockProcessInfo;
     use crate::workspace::WorkspaceRef;
@@ -810,6 +860,531 @@ mod tests {
             "special:magic",
             "scratchpad windows must not collapse to a numeric id"
         );
+    }
+
+    // ── golden: argv byte-identical to 0.1.3 ──
+    //
+    // Every built-in capture path, recorded against the 0.1.3 implementation
+    // before the provider refactor. A change here is a change to what restore
+    // launches, so it must be deliberate: edit the expectation *and* say why
+    // in the case's note.
+
+    struct Golden {
+        note: &'static str,
+        class: &'static str,
+        /// (pid, comm, argv, cwd); the first entry is the window's own process
+        /// and each later one is a child of the entry before it.
+        chain: Vec<(i32, &'static str, Vec<&'static str>, &'static str)>,
+        open: Vec<&'static str>,
+        tweak: fn(&mut Config),
+        expect: Option<Vec<String>>,
+    }
+
+    fn v(parts: &[&str]) -> Option<Vec<String>> {
+        Some(parts.iter().map(|s| s.to_string()).collect())
+    }
+
+    fn untouched(_: &mut Config) {}
+
+    const CLAUDE_FD: &str = "/tmp/claude-1000/-w/0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0/tasks";
+    const CLAUDE_ID: &str = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+
+    fn golden_cases() -> Vec<Golden> {
+        vec![
+            // ── every built-in terminal at its shell's directory ──
+            Golden {
+                note: "foot takes the directory as a separate argument",
+                class: "foot",
+                chain: vec![
+                    (10, "foot", vec!["foot"], "/"),
+                    (11, "fish", vec!["fish"], "/w"),
+                ],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&["foot", "-D", "/w"]),
+            },
+            Golden {
+                note: "omarchy's terminal keeps its app-id",
+                class: "org.omarchy.terminal",
+                chain: vec![
+                    (10, "foot", vec!["foot"], "/"),
+                    (11, "bash", vec!["bash"], "/w"),
+                ],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&["foot", "-D", "/w", "--app-id=org.omarchy.terminal"]),
+            },
+            Golden {
+                note: "kitty's directory flag is lower-case",
+                class: "kitty",
+                chain: vec![
+                    (10, "kitty", vec!["kitty"], "/"),
+                    (11, "zsh", vec!["zsh"], "/w"),
+                ],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&["kitty", "-d", "/w"]),
+            },
+            Golden {
+                note: "alacritty's class is capitalised, its binary is not",
+                class: "Alacritty",
+                chain: vec![
+                    (10, "alacritty", vec!["alacritty"], "/"),
+                    (11, "fish", vec!["fish"], "/w"),
+                ],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&["alacritty", "--working-directory", "/w"]),
+            },
+            Golden {
+                note: "ghostty's flag is joined to its value",
+                class: "com.mitchellh.ghostty",
+                chain: vec![
+                    (10, "ghostty", vec!["ghostty"], "/"),
+                    (11, "fish", vec!["fish"], "/w"),
+                ],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&["ghostty", "--working-directory=/w"]),
+            },
+            // ── a TUI inside each exec-flag variant ──
+            Golden {
+                note: "foot takes the program positionally",
+                class: "foot",
+                chain: vec![
+                    (10, "foot", vec!["foot"], "/"),
+                    (11, "fish", vec!["fish"], "/"),
+                    (12, "nvim", vec!["nvim", "a.rs"], "/w"),
+                ],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&["foot", "-D", "/w", "nvim", "a.rs"]),
+            },
+            Golden {
+                note: "extra_args come before the program",
+                class: "org.omarchy.terminal",
+                chain: vec![
+                    (10, "foot", vec!["foot"], "/"),
+                    (11, "nvim", vec!["nvim", "a.rs"], "/w"),
+                ],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&[
+                    "foot",
+                    "-D",
+                    "/w",
+                    "--app-id=org.omarchy.terminal",
+                    "nvim",
+                    "a.rs",
+                ]),
+            },
+            Golden {
+                note: "alacritty needs -e before the program",
+                class: "Alacritty",
+                chain: vec![
+                    (10, "alacritty", vec!["alacritty"], "/"),
+                    (11, "nvim", vec!["nvim", "a.rs"], "/w"),
+                ],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&[
+                    "alacritty",
+                    "--working-directory",
+                    "/w",
+                    "-e",
+                    "nvim",
+                    "a.rs",
+                ]),
+            },
+            Golden {
+                note: "ghostty: joined cwd flag and -e",
+                class: "com.mitchellh.ghostty",
+                chain: vec![
+                    (10, "ghostty", vec!["ghostty"], "/"),
+                    (11, "yazi", vec!["yazi"], "/w"),
+                ],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&["ghostty", "--working-directory=/w", "-e", "yazi"]),
+            },
+            Golden {
+                note: "the TUI wins over the shell it runs under",
+                class: "kitty",
+                chain: vec![
+                    (10, "kitty", vec!["kitty"], "/"),
+                    (11, "zsh", vec!["zsh"], "/shell"),
+                    (12, "btop", vec!["btop"], "/tui"),
+                ],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&["kitty", "-d", "/tui", "btop"]),
+            },
+            Golden {
+                note: "a TUI whose cmdline is unreadable is relaunched by comm",
+                class: "foot",
+                chain: vec![(10, "foot", vec!["foot"], "/"), (11, "htop", vec![], "/w")],
+                open: vec![],
+                tweak: untouched,
+                // An empty cmdline is Some(vec![]), not None: the program is
+                // relaunched with no arguments at all, not even its name.
+                expect: v(&["foot", "-D", "/w"]),
+            },
+            Golden {
+                note: "volatile temp-file arguments are dropped",
+                class: "foot",
+                chain: vec![
+                    (10, "foot", vec!["foot"], "/"),
+                    (
+                        11,
+                        "yazi",
+                        vec![
+                            "yazi",
+                            "--cwd-file=/run/user/1000/x",
+                            "--chooser-file=/tmp/y",
+                        ],
+                        "/w",
+                    ),
+                ],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&["foot", "-D", "/w", "yazi"]),
+            },
+            // ── resume ──
+            Golden {
+                note: "claude resumes the exact session from its open file",
+                class: "kitty",
+                chain: vec![
+                    (10, "kitty", vec!["kitty"], "/"),
+                    (11, "claude", vec!["claude"], "/w"),
+                ],
+                open: vec![CLAUDE_FD],
+                tweak: untouched,
+                expect: v(&["kitty", "-d", "/w", "claude", "--resume", CLAUDE_ID]),
+            },
+            Golden {
+                note: "claude falls back to --continue with no open session file",
+                class: "foot",
+                chain: vec![
+                    (10, "foot", vec!["foot"], "/"),
+                    (11, "claude", vec!["claude"], "/w"),
+                ],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&["foot", "-D", "/w", "claude", "--continue"]),
+            },
+            Golden {
+                note: "a stale resume flag and its value are replaced, others kept",
+                class: "foot",
+                chain: vec![
+                    (10, "foot", vec!["foot"], "/"),
+                    (
+                        11,
+                        "claude",
+                        vec!["claude", "--resume", "old", "-c", "--model", "opus"],
+                        "/w",
+                    ),
+                ],
+                open: vec![CLAUDE_FD],
+                tweak: untouched,
+                expect: v(&[
+                    "foot", "-D", "/w", "claude", "--model", "opus", "--resume", CLAUDE_ID,
+                ]),
+            },
+            Golden {
+                note: "an id_command rule substitutes the TUI's directory",
+                class: "foot",
+                chain: vec![
+                    (10, "foot", vec!["foot"], "/"),
+                    (11, "myagent", vec!["myagent"], "/tmp/x"),
+                ],
+                open: vec![],
+                tweak: |c| {
+                    c.tui.programs.push("myagent".to_string());
+                    c.tui.resume.insert(
+                        "myagent".to_string(),
+                        crate::config::ResumeConfig {
+                            fd_glob: None,
+                            id_command: vec![
+                                "sh".to_string(),
+                                "-c".to_string(),
+                                "[ '{cwd}' = /tmp/x ] && printf %s abc-123".to_string(),
+                            ],
+                            args: vec!["--session".to_string(), "{id}".to_string()],
+                            fallback: vec![],
+                            strip_flags: vec![],
+                        },
+                    );
+                },
+                expect: v(&["foot", "-D", "/tmp/x", "myagent", "--session", "abc-123"]),
+            },
+            // ── no shell, no TUI ──
+            Golden {
+                note: "a terminal with no shell reopens at its own directory",
+                class: "foot",
+                chain: vec![(10, "foot", vec!["foot"], "/var/tmp")],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&["foot", "-D", "/var/tmp"]),
+            },
+            Golden {
+                note: "a TUI nested beyond the search depth is not found",
+                class: "foot",
+                chain: vec![
+                    (10, "foot", vec!["foot"], "/"),
+                    (11, "fish", vec!["fish"], "/shell"),
+                    (12, "a", vec!["a"], "/"),
+                    (13, "b", vec!["b"], "/"),
+                    (14, "c", vec!["c"], "/"),
+                    (15, "d", vec!["d"], "/"),
+                    (16, "nvim", vec!["nvim"], "/deep"),
+                ],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&["foot", "-D", "/shell"]),
+            },
+            // ── the session-manager family, recorded as it stands ──
+            Golden {
+                note: "herdr is treated as a TUI; its --session is replayed verbatim",
+                class: "foot",
+                chain: vec![
+                    (10, "foot", vec!["foot"], "/"),
+                    (11, "herdr", vec!["herdr", "--session", "backend"], "/w"),
+                ],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&["foot", "-D", "/w", "herdr", "--session", "backend"]),
+            },
+            // ── generic applications ──
+            Golden {
+                note: "a plain app replays its own argv",
+                class: "obsidian",
+                chain: vec![(
+                    50,
+                    "obsidian",
+                    vec!["/usr/bin/obsidian", "--enable-wayland-ime"],
+                    "/",
+                )],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&["/usr/bin/obsidian", "--enable-wayland-ime"]),
+            },
+            Golden {
+                note: "a flattened chromium-style argv is split back apart",
+                class: "google-chrome",
+                chain: vec![(
+                    50,
+                    "chrome",
+                    vec!["/bin/sh --ozone-platform=wayland --x=a,b"],
+                    "/",
+                )],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&["/bin/sh", "--ozone-platform=wayland", "--x=a,b"]),
+            },
+            Golden {
+                note: "a class claimed by no terminal is generic even if it hosts a TUI",
+                class: "code",
+                chain: vec![
+                    (50, "code", vec!["/usr/share/code/code"], "/"),
+                    (51, "nvim", vec!["nvim"], "/w"),
+                ],
+                open: vec![],
+                tweak: untouched,
+                expect: v(&["/usr/share/code/code"]),
+            },
+            Golden {
+                note: "an empty argv yields nothing to replay",
+                class: "obsidian",
+                chain: vec![(50, "obsidian", vec![], "/")],
+                open: vec![],
+                tweak: untouched,
+                expect: None,
+            },
+            // ── [apps] overrides ──
+            Golden {
+                note: "apps: binary replaced, arguments stripped by prefix",
+                class: "signal",
+                chain: vec![(
+                    70,
+                    "signal",
+                    vec!["/usr/lib/signal/signal", "--start-in-tray", "--keep"],
+                    "/",
+                )],
+                open: vec![],
+                tweak: |c| {
+                    c.apps.insert(
+                        "signal".to_string(),
+                        AppConfig {
+                            binary: Some("signal-desktop".to_string()),
+                            no_spawn: false,
+                            strip_args: vec!["--start-in".to_string()],
+                        },
+                    );
+                },
+                expect: v(&["signal-desktop", "--keep"]),
+            },
+            Golden {
+                note: "apps: a binary override rescues an empty argv",
+                class: "signal",
+                chain: vec![(70, "signal", vec![], "/")],
+                open: vec![],
+                tweak: |c| {
+                    c.apps.insert(
+                        "signal".to_string(),
+                        AppConfig {
+                            binary: Some("signal-desktop".to_string()),
+                            no_spawn: false,
+                            strip_args: vec![],
+                        },
+                    );
+                },
+                expect: v(&["signal-desktop"]),
+            },
+            Golden {
+                note: "apps: overrides have no effect on a terminal class",
+                class: "foot",
+                chain: vec![(10, "foot", vec!["foot"], "/w")],
+                open: vec![],
+                tweak: |c| {
+                    c.apps.insert(
+                        "foot".to_string(),
+                        AppConfig {
+                            binary: Some("footclient".to_string()),
+                            no_spawn: false,
+                            strip_args: vec!["-D".to_string()],
+                        },
+                    );
+                },
+                expect: v(&["foot", "-D", "/w"]),
+            },
+            // ── a user [terminals] table replaces the built-ins ──
+            Golden {
+                note: "a replaced terminals table leaves kitty generic",
+                class: "kitty",
+                chain: vec![(10, "kitty", vec!["kitty", "--single-instance"], "/w")],
+                open: vec![],
+                tweak: |c| {
+                    c.terminals.retain(|k, _| k == "foot");
+                },
+                expect: v(&["kitty", "--single-instance"]),
+            },
+        ]
+    }
+
+    #[test]
+    fn golden_capture_argv_is_unchanged_from_0_1_3() {
+        let mut failures = Vec::new();
+        for case in golden_cases() {
+            let mut proc = MockProcessInfo::default();
+            for (i, (pid, comm, argv, cwd)) in case.chain.iter().enumerate() {
+                proc.add(*pid, comm, argv, cwd);
+                if i > 0 {
+                    proc.link(case.chain[i - 1].0, *pid);
+                }
+            }
+            let tui_pid = case.chain.last().unwrap().0;
+            if !case.open.is_empty() {
+                proc.open(tui_pid, &case.open);
+            }
+            let mut cfg = config();
+            (case.tweak)(&mut cfg);
+            let got = relaunch_argv(&client(case.class, case.chain[0].0), &proc, &cfg);
+            if got != case.expect {
+                failures.push(format!(
+                    "{} [{}]\n    expected {:?}\n    got      {:?}",
+                    case.note, case.class, case.expect, got
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "capture argv drifted from 0.1.3:\n  {}",
+            failures.join("\n  ")
+        );
+    }
+
+    // ── providers ──
+
+    #[test]
+    fn each_launch_records_the_provider_that_captured_it() {
+        let mut cfg = config();
+        cfg.apps.insert(
+            "Spotify".to_string(),
+            AppConfig {
+                binary: None,
+                no_spawn: true,
+                strip_args: vec![],
+            },
+        );
+        let mut proc = MockProcessInfo::default();
+        proc.add(10, "foot", &["foot"], "/w");
+        proc.add(20, "obsidian", &["obsidian"], "/");
+        proc.add(30, "spotify", &["spotify"], "/");
+        let hypr = MockHyprctl::new(vec![vec![
+            client("foot", 10),
+            client("obsidian", 20),
+            client("Spotify", 30),
+        ]]);
+        let session = capture_session("latest", &hypr, &proc, &cfg).unwrap();
+        let providers: Vec<_> = session
+            .clients
+            .iter()
+            .map(|c| c.launch.provider.as_deref())
+            .collect();
+        assert_eq!(
+            providers,
+            vec![Some("foot"), Some("generic"), Some("Spotify")]
+        );
+        assert!(!session.clients[2].launch.spawn, "no_spawn still applies");
+    }
+
+    #[test]
+    fn a_new_form_terminal_is_captured_like_a_builtin_one() {
+        let cfg: Config = toml::from_str(
+            r#"
+[providers.wezterm]
+kind = "terminal"
+classes = ["org.wezfurlong.wezterm"]
+binary = "wezterm"
+cwd_flag = "--cwd"
+exec_flag = "-e"
+"#,
+        )
+        .unwrap();
+        let mut proc = MockProcessInfo::default();
+        proc.add(10, "wezterm-gui", &["wezterm-gui"], "/");
+        proc.add(11, "nvim", &["nvim", "a.rs"], "/w");
+        proc.link(10, 11);
+        let argv = relaunch_argv(&client("org.wezfurlong.wezterm", 10), &proc, &cfg).unwrap();
+        assert_eq!(argv, vec!["wezterm", "--cwd", "/w", "-e", "nvim", "a.rs"]);
+        // The built-ins are still there alongside it.
+        proc.add(20, "foot", &["foot"], "/x");
+        assert_eq!(
+            relaunch_argv(&client("foot", 20), &proc, &cfg).unwrap(),
+            vec!["foot", "-D", "/x"]
+        );
+    }
+
+    #[test]
+    fn a_new_form_command_pattern_applies_its_overrides() {
+        let cfg: Config = toml::from_str(
+            r#"
+[providers.jetbrains]
+kind = "command"
+classes = ["jetbrains-*"]
+strip_args = ["-Dtmp.session"]
+"#,
+        )
+        .unwrap();
+        let mut proc = MockProcessInfo::default();
+        proc.add(
+            50,
+            "java",
+            &["/opt/idea/bin/idea", "-Dtmp.session=/tmp/x", "/w/proj"],
+            "/",
+        );
+        let argv = relaunch_argv(&client("jetbrains-idea", 50), &proc, &cfg).unwrap();
+        assert_eq!(argv, vec!["/opt/idea/bin/idea", "/w/proj"]);
     }
 
     #[test]
