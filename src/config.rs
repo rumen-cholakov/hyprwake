@@ -248,6 +248,10 @@ fn default_ignore_classes() -> Vec<String> {
         "xdg-desktop-portal",
         "xdg-desktop-portal-gtk",
         "xdg-desktop-portal-hyprland",
+        // A nested Hyprland — a test or development compositor — shows on
+        // the host as a window of its backend library, aquamarine. Saved, it
+        // would be relaunched at boot as a compositor inside the session.
+        "aquamarine",
     ]
     .into_iter()
     .map(String::from)
@@ -565,6 +569,11 @@ mod tests {
         assert_eq!(c.general.default_session, "latest");
         assert!(c.is_ignored("waybar"));
         assert!(!c.is_ignored("foot"));
+    }
+
+    #[test]
+    fn a_nested_compositor_is_never_saved() {
+        assert!(Config::default().is_ignored("aquamarine"));
     }
 
     #[test]

@@ -45,6 +45,10 @@
   that had gone away or the wrong `XDG_RUNTIME_DIR` all passed. It now
   connects, and names the socket when that fails. Found by the agent-stack
   nested-compositor tests.
+- **A nested Hyprland is never saved.** A nested compositor shows on the
+  host as an `aquamarine` window (Hyprland's backend library); a watcher save
+  while one was open would have relaunched a compositor inside the session at
+  the next boot. `aquamarine` is now in the default `ignore_classes`.
 - **Running the test suite no longer stops your watcher.** A service test
   installed a unit into a temporary directory and then uninstalled it — which
   ran `systemctl --user disable --now hyprwake-watch.service` against the real
