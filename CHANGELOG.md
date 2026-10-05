@@ -22,6 +22,13 @@
 
 ### Fixes
 
+- **Running the test suite no longer stops your watcher.** A service test
+  installed a unit into a temporary directory and then uninstalled it — which
+  ran `systemctl --user disable --now hyprwake-watch.service` against the real
+  user systemd, stopping and disabling the live watcher on every `cargo test`.
+  Every systemd call now goes through one module that records instead of
+  running under test, and a test fails if any other module calls `systemctl`.
+  Autosave's uninstall no longer disables a timer it did not install.
 - **Tiled windows come back in the order they were saved.** Dwindle tiles
   windows in the order they *map*, and a restore launched a workspace's windows
   back to back — so a terminal launched second overtook a browser or an

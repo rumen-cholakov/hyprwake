@@ -82,13 +82,7 @@ pub fn is_enabled() -> bool {
 }
 
 fn systemctl(args: &[&str]) -> bool {
-    let mut full = vec!["--user"];
-    full.extend_from_slice(args);
-    std::process::Command::new("systemctl")
-        .args(&full)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    crate::systemd::user(args)
 }
 
 #[cfg(test)]
@@ -114,6 +108,7 @@ mod tests {
 
     #[test]
     fn install_writes_the_unit_and_uninstall_removes_it() {
+        let _ = crate::systemd::take_calls();
         let dir = TempDir::new().unwrap();
         assert!(!is_installed(dir.path()));
         let path = install(dir.path()).unwrap();
@@ -121,11 +116,22 @@ mod tests {
         assert!(is_installed(dir.path()));
         assert!(uninstall(dir.path()).unwrap());
         assert!(!is_installed(dir.path()));
+        // What it would have run. This test once *ran* it, against the
+        // developer's own systemd, stopping their watcher every `cargo test`.
+        assert_eq!(
+            crate::systemd::take_calls(),
+            vec![vec!["disable", "--now", UNIT], vec!["daemon-reload"]]
+        );
     }
 
     #[test]
     fn uninstalling_nothing_is_not_an_error() {
+        let _ = crate::systemd::take_calls();
         let dir = TempDir::new().unwrap();
         assert!(!uninstall(dir.path()).unwrap());
+        assert!(
+            crate::systemd::take_calls().is_empty(),
+            "nothing to disable"
+        );
     }
 }

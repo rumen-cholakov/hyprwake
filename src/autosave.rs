@@ -253,9 +253,11 @@ pub fn install(systemd_dir: &Path) -> std::io::Result<(PathBuf, PathBuf)> {
 }
 
 pub fn uninstall(systemd_dir: &Path) -> std::io::Result<()> {
-    let _ = std::process::Command::new("systemctl")
-        .args(["--user", "disable", "--now", TIMER_NAME])
-        .output();
+    // Only when there is something to disable: a timer that was never
+    // installed here may still be a real unit somewhere else on the system.
+    if systemd_dir.join(TIMER_NAME).exists() {
+        let _ = crate::systemd::user(&["disable", "--now", TIMER_NAME]);
+    }
     for name in [TIMER_NAME, SERVICE_NAME] {
         let path = systemd_dir.join(name);
         if path.exists() {
@@ -269,20 +271,12 @@ pub fn is_installed(systemd_dir: &Path) -> bool {
     systemd_dir.join(TIMER_NAME).exists()
 }
 
-fn systemctl_ok(args: &[&str]) -> bool {
-    std::process::Command::new("systemctl")
-        .args(args)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
 pub fn is_active() -> bool {
-    systemctl_ok(&["--user", "is-active", "--quiet", TIMER_NAME])
+    crate::systemd::user(&["is-active", "--quiet", TIMER_NAME])
 }
 
 pub fn is_enabled() -> bool {
-    systemctl_ok(&["--user", "is-enabled", "--quiet", TIMER_NAME])
+    crate::systemd::user(&["is-enabled", "--quiet", TIMER_NAME])
 }
 
 #[cfg(test)]
@@ -359,14 +353,24 @@ mod tests {
             .unwrap()
             .contains("OnUnitActiveSec=10min"));
 
+        let _ = crate::systemd::take_calls();
         uninstall(dir.path()).unwrap();
         assert!(!is_installed(dir.path()));
         assert!(!service.exists());
+        assert_eq!(
+            crate::systemd::take_calls(),
+            vec![vec!["disable", "--now", TIMER_NAME]]
+        );
     }
 
     #[test]
     fn uninstalling_when_nothing_is_installed_is_fine() {
+        let _ = crate::systemd::take_calls();
         let dir = TempDir::new().unwrap();
         assert!(uninstall(dir.path()).is_ok());
+        assert!(
+            crate::systemd::take_calls().is_empty(),
+            "a timer never installed here must not be disabled elsewhere"
+        );
     }
 }
