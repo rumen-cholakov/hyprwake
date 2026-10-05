@@ -33,6 +33,12 @@
 
 ### Fixes
 
+- **A terminal standing in a deleted directory is reopened somewhere real.**
+  The kernel reports a removed working directory as `"<path> (deleted)"`, and
+  hyprwake captured exactly that — a terminal restored into a directory that
+  does not exist, suffix included. A build directory or a git worktree removed
+  under an open shell was enough. Such a directory now counts as unknown and
+  the terminal reopens where it was started, or at home.
 - **Running the test suite no longer stops your watcher.** A service test
   installed a unit into a temporary directory and then uninstalled it — which
   ran `systemctl --user disable --now hyprwake-watch.service` against the real

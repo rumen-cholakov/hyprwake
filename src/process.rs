@@ -62,8 +62,24 @@ impl ProcessInfoProvider for RealProcessInfo {
         }
     }
 
+    /// `None` for a directory that is not there to reopen a terminal in.
+    ///
+    /// A directory removed while a process stood in it reads back from the
+    /// kernel as `"<path> (deleted)"`, and one inside a private mount
+    /// namespace (a sandbox) may not exist from here at all. Relaunching a
+    /// terminal at either would fail, so the caller falls back — to the
+    /// terminal's own directory, then home.
     fn cwd(&self, pid: i32) -> Option<PathBuf> {
-        std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+        let path = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
+        if path.is_dir() {
+            Some(path)
+        } else {
+            crate::logging::log(format!(
+                "capture: pid {pid} stands in {} which no longer exists here; falling back",
+                path.display()
+            ));
+            None
+        }
     }
 
     fn comm(&self, pid: i32) -> Option<String> {
@@ -225,6 +241,31 @@ mod tests {
         m.add(2, "b", &["b"], "/");
         m.link(1, 2).link(2, 1);
         assert_eq!(m.find_descendant(1, &names(&["zzz"]), 3), None);
+    }
+
+    #[test]
+    fn a_deleted_working_directory_is_not_reported() {
+        // The kernel keeps the process standing in the removed directory and
+        // names it "<path> (deleted)"; hyprwake once relaunched terminals
+        // there.
+        let dir = tempfile::TempDir::new().unwrap();
+        let gone = dir.path().join("build");
+        std::fs::create_dir(&gone).unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .current_dir(&gone)
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
+        assert_eq!(RealProcessInfo.cwd(pid).as_deref(), Some(gone.as_path()));
+
+        std::fs::remove_dir(&gone).unwrap();
+        let raw = std::fs::read_link(format!("/proc/{pid}/cwd")).unwrap();
+        assert!(raw.to_string_lossy().ends_with("(deleted)"), "{raw:?}");
+        assert_eq!(RealProcessInfo.cwd(pid), None);
+
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]
