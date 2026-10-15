@@ -382,7 +382,7 @@ protocol when Hyprland grows it.
 ## Development
 
 ```sh
-cargo test        # 363 tests, no compositor required
+cargo test        # 364 tests, no compositor required
 cargo clippy --all-targets
 ```
 

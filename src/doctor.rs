@@ -135,6 +135,64 @@ fn layout_check(config: &Config, opts: &crate::layout::LayoutOptions) -> Check {
     Check::new("layout", Status::Ok, detail)
 }
 
+/// Whether each mapped Chromium profile will reopen its tabs.
+///
+/// `restore_last_session` reopens the session of the first profile the
+/// browser starts with and no other: a profile opened into the running
+/// browser ignores the flag and follows its own "On startup" setting. Only
+/// worth a line when some browser has profiles mapped to workspaces.
+fn browsers_check(providers: &crate::provider::ProviderSet) -> Option<Check> {
+    use crate::provider::ProviderSpec;
+    let mut reported = false;
+    let mut new_tab: Vec<String> = Vec::new();
+    for p in providers.providers() {
+        let ProviderSpec::Chromium(_) = &p.entry.spec else {
+            continue;
+        };
+        let Some(browser) = p.entry.spec.browser() else {
+            continue;
+        };
+        if browser.profile_workspaces.is_empty() || !crate::browsers::state_path(&browser).exists()
+        {
+            continue;
+        }
+        reported = true;
+        let mut mapped: Vec<&String> = browser.profile_workspaces.keys().collect();
+        mapped.sort();
+        let failing: Vec<String> = mapped
+            .iter()
+            .filter(|d| crate::browsers::chromium_reopens_tabs(&browser, d) == Some(false))
+            .map(|d| format!("{} \"{d}\"", p.key))
+            .collect();
+        // The flag covers a browser's only mapped profile.
+        if browser.restore_last_session && mapped.len() == 1 {
+            continue;
+        }
+        new_tab.extend(failing);
+    }
+    if !reported {
+        return None;
+    }
+    Some(if new_tab.is_empty() {
+        Check::new(
+            "browsers",
+            Status::Ok,
+            "every mapped browser profile reopens its tabs",
+        )
+    } else {
+        Check::new(
+            "browsers",
+            Status::Warn,
+            format!(
+                "{} would open a New Tab page on restore: set its \"On startup\" to \
+                 \"Continue where you left off\" (restore_last_session reopens only the \
+                 first profile the browser starts with)",
+                new_tab.join(", ")
+            ),
+        )
+    })
+}
+
 /// Rebuilding groups relies on `group:auto_group`: a window opening while a
 /// group has focus joins it. Only worth a line when regrouping is on.
 fn groups_check(config: &Config, hyprctl: &dyn HyprctlClient) -> Option<Check> {
@@ -249,6 +307,11 @@ pub fn run(
     } else {
         Check::new("terminals", Status::Ok, present.join(", "))
     });
+
+    // ── browser profiles that would open a New Tab page ──
+    if let Some(check) = browsers_check(&providers) {
+        checks.push(check);
+    }
 
     // ── provider declarations ──
     if !providers.problems().is_empty() {
@@ -513,6 +576,50 @@ mod tests {
         assert!(layout_check(&config, &scrolling)
             .detail
             .contains("cannot infer"));
+    }
+
+    #[test]
+    fn a_mapped_profile_that_opens_a_new_tab_page_is_named() {
+        let dir = TempDir::new().unwrap();
+        let state = dir.path().join("Local State");
+        std::fs::write(&state, "{}").unwrap();
+        for (profile, prefs) in [
+            ("Default", r#"{"session":{"restore_on_startup":1}}"#),
+            ("Work", r#"{"session":{}}"#),
+        ] {
+            std::fs::create_dir_all(dir.path().join(profile)).unwrap();
+            std::fs::write(dir.path().join(profile).join("Preferences"), prefs).unwrap();
+        }
+        let config = |restore: bool, profiles: &str| -> Config {
+            toml::from_str(&format!(
+                "[providers.chrome]\nkind = \"chromium\"\nclasses = [\"google-chrome\"]\n\
+                 binary = \"google-chrome-stable\"\nlocal_state = \"{}\"\n\
+                 restore_last_session = {restore}\nprofile_workspaces = {{ {profiles} }}\n",
+                state.display()
+            ))
+            .unwrap()
+        };
+        let check = |c: &Config| browsers_check(&crate::provider::ProviderSet::from_config(c));
+
+        let both = check(&config(true, r#""Default" = "2", "Work" = "3""#)).unwrap();
+        assert_eq!(both.status, Status::Warn);
+        assert!(both.detail.contains("chrome \"Work\""), "{}", both.detail);
+        assert!(!both.detail.contains("Default"), "{}", both.detail);
+
+        let only_work = check(&config(true, r#""Work" = "3""#)).unwrap();
+        assert_eq!(
+            only_work.status,
+            Status::Ok,
+            "the flag covers a lone profile"
+        );
+
+        let without_flag = check(&config(false, r#""Work" = "3""#)).unwrap();
+        assert_eq!(without_flag.status, Status::Warn);
+
+        assert!(
+            check(&toml::from_str("").unwrap()).is_none(),
+            "silent when no profile is mapped"
+        );
     }
 
     #[test]

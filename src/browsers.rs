@@ -96,6 +96,30 @@ pub fn state_path(config: &BrowserConfig) -> PathBuf {
     }
 }
 
+/// Whether a Chromium profile reopens its last session when it starts with
+/// nothing on its command line saying otherwise: `session.restore_on_startup`
+/// in its `Preferences` is 1. 4 opens set pages; 5, and no value at all, open
+/// a New Tab page. `None` when the profile's preferences cannot be read.
+///
+/// This matters beyond the first profile: `--restore-last-session` applies
+/// only when the browser process starts, so a second profile opened into the
+/// running browser ignores it and does what this setting says — measured
+/// against Chrome 154.
+pub fn chromium_reopens_tabs(config: &BrowserConfig, directory: &str) -> Option<bool> {
+    let prefs = state_path(config)
+        .parent()?
+        .join(directory)
+        .join("Preferences");
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(prefs).ok()?).ok()?;
+    Some(
+        value
+            .pointer("/session/restore_on_startup")
+            .and_then(|v| v.as_i64())
+            == Some(1),
+    )
+}
+
 /// Parse Firefox's `profiles.ini`.
 ///
 /// Profiles are selected by name on the command line, so the name is both the

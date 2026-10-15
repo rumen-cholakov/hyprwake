@@ -30,10 +30,13 @@ way. The same arrival can be slotted into a rebuilt tree by `window.swap`.
 confirm it. zellij and screen need the same treatment — finding a client's
 session — and neither is installed on the validation machine yet.
 
-**Validate `restore_last_session`.** The Chromium flag is shipped off and
-unvalidated. Its four questions — cold start, browser already running,
-after an unclean exit, several profiles — can each be answered in a nest with
-a throwaway `--user-data-dir`.
+**Browser profiles beyond the first.** `--restore-last-session` restores
+only the first profile a Chromium browser starts with (measured; see
+docs/PROVIDERS.md), and `doctor` now names the others that need their own
+"Continue where you left off". Restoring them without asking the user to
+change a setting would mean starting the browser once per profile, or
+reopening their last session's tabs from its session files — worth weighing
+once the opt-in is in real use.
 
 **A standing regression nest.** `bench/hyprwake-regress.sh`, proposed to
 agent-stack, runs the round trips that found tonight's bugs (tab order,

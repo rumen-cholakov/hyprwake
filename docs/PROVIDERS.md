@@ -204,13 +204,27 @@ Chrome and Chromium are confirmed on the validation machine; the other
 entries `hyprwake config --init` knows about (Brave, Edge, Vivaldi, Firefox,
 Zen, LibreWolf) are offered only when their profile file exists.
 
-`restore_last_session = true` passes `--restore-last-session`, so each
-profile reopens its tabs even when its own startup setting is "Open the New
-Tab page". It is off by default, because it overrides a preference you may
-have set on purpose. **Its behaviour is not yet validated**: on a cold start,
-with the browser already running, after an unclean exit, and across several
-profiles. Firefox has no equivalent switch — only its `browser.startup.page`
-preference — so the option does not exist for `kind = "firefox"`.
+`restore_last_session = true` passes `--restore-last-session`. It is off by
+default, because it overrides a preference you may have set on purpose.
+Measured against Chrome 154 in a nested compositor, with throwaway profiles
+and a control copy of each:
+
+| Case | With the flag | Without |
+|---|---|---|
+| Cold start, startup setting "Open the New Tab page" | tabs restored | New Tab |
+| After `kill -9` — the unclean exit a reboot can be | tabs restored | New Tab |
+| Browser already running for that profile | one extra New Tab window; nothing duplicated | — |
+| Two profiles, opened one after the other | only the **first** restored | — |
+
+The last row is the one to know: the flag takes effect only when the browser
+process starts, so a second profile, opened into the running browser,
+ignores it and follows its own "On startup" setting. With several profiles
+mapped, set each to "Continue where you left off"
+(`session.restore_on_startup = 1`) — measured to restore a profile opened
+second — and `doctor` names any mapped profile that would open a New Tab
+page instead. Firefox has no equivalent switch — only its
+`browser.startup.page` preference — so the option does not exist for
+`kind = "firefox"`.
 
 ### Out of scope for 0.2.0
 

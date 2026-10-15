@@ -101,9 +101,12 @@
   Declaration problems — two providers claiming one class — are shown there
   and in `doctor`. Each saved window records which provider captured it.
 - **`restore_last_session`** on a Chromium provider passes
-  `--restore-last-session`, so each profile reopens its tabs whatever its own
-  startup setting is. Off by default, and not yet validated across a running
-  browser, an unclean exit or several profiles.
+  `--restore-last-session`. Off by default. Measured against Chrome 154: it
+  restores tabs on a cold start and after an unclean exit, but only for the
+  first profile the browser starts with — a profile opened into the running
+  browser ignores it. `doctor` names any mapped profile that would open a New
+  Tab page on restore and says to set its "On startup" to "Continue where you
+  left off".
 - **`hyprwake config --init`** writes the new form. Terminals already handled
   by a built-in provider are listed rather than repeated.
 - **`hyprwake restore --dry-run --json`** prints the restore as a list of
