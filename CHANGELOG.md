@@ -137,6 +137,9 @@ information; there is nothing to convert either way.
 
 ### Fixes
 
+- **An external provider's helper written moments before it ran could fail
+  to start** with "text file busy" if another process forked meanwhile; the
+  start is now retried briefly.
 - **`--missing-only` relaunched the wrong window.** It took the first saved
   window of a class to be the one already open: with a terminal open on
   workspace 2 out of three saved on 1, 2 and 3, it launched a second terminal

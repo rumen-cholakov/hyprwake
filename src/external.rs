@@ -290,13 +290,8 @@ fn run(command: &[String], input: &str, timeout: Duration) -> Result<String, Hel
     let (program, args) = command.split_first().ok_or(HelperError::Empty)?;
     let path = trusted(program)?;
     let shown = path.display().to_string();
-    let mut child = Command::new(&path)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| HelperError::Spawn(shown.clone(), e.to_string()))?;
+    let mut child =
+        spawn(&path, args).map_err(|e| HelperError::Spawn(shown.clone(), e.to_string()))?;
 
     // Both pipes on their own threads: a helper that writes before it reads,
     // or never reads at all, must not wedge the save.
@@ -326,6 +321,30 @@ fn run(command: &[String], input: &str, timeout: Duration) -> Result<String, Hel
             let _ = child.kill();
             let _ = child.wait();
             Err(HelperError::Timeout(shown, timeout))
+        }
+    }
+}
+
+/// Start a helper, retrying briefly while the kernel says its file is busy
+/// (`ETXTBSY`). That happens when a helper was written moments ago and
+/// another thread forked while the file was still open for writing — rare
+/// for a helper on disk, routine in a test suite that writes them.
+fn spawn(path: &Path, args: &[String]) -> std::io::Result<std::process::Child> {
+    const ETXTBSY: i32 = 26;
+    let mut attempt = 0;
+    loop {
+        let result = Command::new(path)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn();
+        match result {
+            Err(e) if e.raw_os_error() == Some(ETXTBSY) && attempt < 5 => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            other => return other,
         }
     }
 }
