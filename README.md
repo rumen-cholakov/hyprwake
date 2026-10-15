@@ -373,10 +373,16 @@ table when you list any — and are read into the same providers.
 - **D-Bus-activated apps** whose `/proc` cmdline says nothing useful.
 - **A different kernel.** Nothing here is a memory image; that is the point.
 
+## Where it is going
+
+[docs/ROADMAP.md](docs/ROADMAP.md): finishing 0.2 on real hardware, then a
+snapshot timeline with `undo`, editor sessions, and the native session
+protocol when Hyprland grows it.
+
 ## Development
 
 ```sh
-cargo test        # 354 tests, no compositor required
+cargo test        # 363 tests, no compositor required
 cargo clippy --all-targets
 ```
 
