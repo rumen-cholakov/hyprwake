@@ -85,6 +85,56 @@ fn event_socket_check(path: Option<std::path::PathBuf>) -> Check {
     }
 }
 
+/// Whether saved split trees will be rebuilt, and whether the compositor
+/// will keep them.
+///
+/// With `dwindle:preserve_split` off, Hyprland re-derives every split's
+/// orientation from the shape of its box, so a rebuilt tree holds only while
+/// the shapes do; capture already scores a tree that relies on anything else
+/// as unreachable. Worth a warning only when replay is turned on.
+fn layout_check(config: &Config, opts: &crate::layout::LayoutOptions) -> Check {
+    use crate::config::LayoutMode;
+    let mode = config.restore.layout;
+    let kind = opts.kind();
+    let detail = match (mode, &kind) {
+        (LayoutMode::Off, _) => {
+            return Check::new("layout", Status::Ok, "off: no trees recorded or rebuilt")
+        }
+        (LayoutMode::ReadingOrder, _) => {
+            return Check::new(
+                "layout",
+                Status::Ok,
+                "reading order; trees are recorded, set [restore] layout = \"best-effort\" to rebuild them",
+            )
+        }
+        (_, None) => {
+            return Check::new(
+                "layout",
+                Status::Warn,
+                format!(
+                    "general:layout is {}, which hyprwake cannot infer; workspaces restore in reading order",
+                    opts.layout
+                ),
+            )
+        }
+        (_, Some(kind)) => format!(
+            "{} rebuilding of {kind} trees",
+            if mode == LayoutMode::Strict { "strict" } else { "best-effort" }
+        ),
+    };
+    if opts.layout == "dwindle" && !opts.preserve_split {
+        return Check::new(
+            "layout",
+            Status::Warn,
+            format!(
+                "{detail}; dwindle:preserve_split is off, so Hyprland re-derives split \
+                 orientations from window shapes and a rebuilt tree can reflow when resized"
+            ),
+        );
+    }
+    Check::new("layout", Status::Ok, detail)
+}
+
 /// What the snapshot on disk says it is, and what wrote it.
 ///
 /// An older snapshot is fine — it is migrated on load — so this reports
@@ -185,6 +235,12 @@ pub fn run(
             ),
         ));
     }
+
+    // ── layout replay ──
+    checks.push(layout_check(
+        config,
+        &crate::layout::LayoutOptions::read(hyprctl),
+    ));
 
     // ── external providers: a helper that will not be run ──
     let mut refused = Vec::new();
@@ -403,6 +459,31 @@ mod tests {
         let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         let present = event_socket_check(Some(path));
         assert_eq!(present.status, Status::Ok, "{}", present.detail);
+    }
+
+    #[test]
+    fn layout_replay_without_preserve_split_is_a_warning() {
+        use crate::config::LayoutMode;
+        use crate::layout::LayoutOptions;
+        let mut config: Config = toml::from_str("").unwrap();
+        let opts = LayoutOptions::default();
+        assert_eq!(layout_check(&config, &opts).status, Status::Ok);
+        config.restore.layout = LayoutMode::BestEffort;
+        let warn = layout_check(&config, &opts);
+        assert_eq!(warn.status, Status::Warn);
+        assert!(warn.detail.contains("preserve_split"), "{}", warn.detail);
+        let kept = LayoutOptions {
+            preserve_split: true,
+            ..opts.clone()
+        };
+        assert_eq!(layout_check(&config, &kept).status, Status::Ok);
+        let scrolling = LayoutOptions {
+            layout: "scrolling".into(),
+            ..opts
+        };
+        assert!(layout_check(&config, &scrolling)
+            .detail
+            .contains("cannot infer"));
     }
 
     #[test]

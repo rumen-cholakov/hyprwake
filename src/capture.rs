@@ -1,9 +1,11 @@
 //! Turning the live desktop into a [`Session`].
 
 use crate::browsers;
+use crate::config::LayoutMode;
 use crate::config::{Config, TerminalConfig};
 use crate::external::{self, ExternalConfig};
 use crate::hyprctl::{HyprClient, HyprctlClient, HyprctlError};
+use crate::layout::{self, LayoutOptions, Rect};
 use crate::process::ProcessInfoProvider;
 use crate::provider::{CommandConfig, ProviderSet, ProviderSpec, Resolution};
 use crate::session::{
@@ -35,6 +37,7 @@ pub fn capture_session(
     config: &Config,
 ) -> Result<Session, CaptureError> {
     let raw_clients = hyprctl.get_clients()?;
+    let layout = (config.restore.layout != LayoutMode::Off).then(|| LayoutOptions::read(hyprctl));
     let raw_monitors = hyprctl.get_monitors().unwrap_or_default();
     let version = hyprctl
         .get_hyprland_version()
@@ -134,7 +137,7 @@ pub fn capture_session(
         name: name.to_string(),
         created_at: Utc::now(),
         hyprland_version: version,
-        workspaces: workspaces_of(&clients),
+        workspaces: workspaces_of(&clients, layout.as_ref()),
         monitors,
         clients,
         browser_profiles,
@@ -147,7 +150,12 @@ pub fn capture_session(
 /// The monitor comes from the windows on it rather than from `hyprctl
 /// workspaces`, so a workspace with no windows produces no entry — there is
 /// nothing to restore onto it.
-fn workspaces_of(clients: &[SessionClient]) -> Vec<Workspace> {
+///
+/// With `layout`, each workspace also gets the split tree its tiled windows
+/// were in, the layout kind and how confident the inference was. A tree is
+/// recorded whatever the restore mode; whether it is replayed is restore's
+/// decision.
+fn workspaces_of(clients: &[SessionClient], layout: Option<&LayoutOptions>) -> Vec<Workspace> {
     let mut seen: Vec<Workspace> = Vec::new();
     for client in clients {
         if seen
@@ -164,7 +172,52 @@ fn workspaces_of(clients: &[SessionClient]) -> Vec<Workspace> {
             layout_confidence: None,
         });
     }
+    if let Some(opts) = layout {
+        for ws in &mut seen {
+            infer_workspace(ws, clients, opts);
+        }
+    }
     seen
+}
+
+fn infer_workspace(ws: &mut Workspace, clients: &[SessionClient], opts: &LayoutOptions) {
+    let tiled: Vec<(usize, &SessionClient)> = clients
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.workspace.same(&ws.workspace) && !c.floating)
+        .collect();
+    if tiled.is_empty() {
+        return;
+    }
+    ws.layout_kind = opts.kind();
+    // A fullscreen window covers its tile, and a group shows one member's
+    // rectangle for all of them: neither says where it sits in the tree.
+    if tiled
+        .iter()
+        .any(|(_, c)| c.fullscreen > 0 || c.group.is_some())
+    {
+        ws.layout_confidence = Some(0.0);
+        return;
+    }
+    let rects: Vec<(usize, Rect)> = tiled
+        .iter()
+        .map(|(i, c)| (*i, Rect::new(c.at, c.size)))
+        .collect();
+    match layout::infer(&rects, opts) {
+        Some(inferred) => {
+            if !inferred.notes.is_empty() {
+                crate::logging::log(format!(
+                    "layout: workspace {} at confidence {:.2}: {}",
+                    ws.workspace.selector(),
+                    inferred.confidence,
+                    inferred.notes.join("; ")
+                ));
+            }
+            ws.layout = Some(inferred.tree);
+            ws.layout_confidence = Some(inferred.confidence);
+        }
+        None => ws.layout_confidence = Some(0.0),
+    }
 }
 
 /// Assign a stable index to each window group, keyed by window address.

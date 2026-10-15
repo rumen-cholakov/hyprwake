@@ -39,6 +39,27 @@
   wrong kind (`restore_last_session` on Firefox, a typo in `strip_args`) is a
   load error with its line number instead of a silent no-op. See
   [docs/PROVIDERS.md](docs/PROVIDERS.md).
+- **Tiling layouts, recorded and optionally rebuilt.** Each save now records,
+  per workspace, the split tree its tiled windows were in — read back from
+  their geometry, since Hyprland does not expose it — with the layout kind
+  (dwindle, or master and its side) and a confidence: 1.0 for a clean tiling,
+  lowered by gaps that are not the configured ones, a window smaller than its
+  tile (pseudotiled), or a split Hyprland would not keep. With
+  `[restore] layout = "best-effort"`, a workspace read at or above
+  `layout_min_confidence` (0.7) is rebuilt split by split: each window
+  launched, focused, and split with `preselect` and `splitratio`, or for
+  master, masters first with `addmaster`, the orientation and `mfact`. A
+  workspace that cannot be — already populated, holding a window its program
+  reopens itself, special, or under the bar — is launched in reading order,
+  and a rebuild that goes wrong part way is abandoned without stopping the
+  restore. `"strict"` rebuilds every recorded tree; `"off"` records nothing
+  and waits for nothing. The default, `"reading-order"`, is the 0.1.x restore.
+  Validated in a nested Hyprland: a four-window dwindle tree with three
+  uneven ratios and a five-window tree came back within 2px across eight
+  restores, a master layout exactly; a pseudotiled window scored 0.6 and its
+  workspace fell back quietly. `doctor` reports the mode and warns when
+  `dwindle:preserve_split` is off; `hyprwake diff` reports a workspace tiled
+  differently from its snapshot.
 - **External providers.** `kind = "external"` hands capture and relaunch of
   a window class to a helper program speaking JSON on stdin and stdout, under
   a contract versioned separately from the snapshot schema. The helper runs

@@ -372,6 +372,16 @@ fn cmd_restore(
                 if report.already_open > 0 {
                     println!("  {} window(s) were already open", report.already_open);
                 }
+                if report.layouts_rebuilt + report.layouts_abandoned > 0 {
+                    println!(
+                        "  {} workspace layout(s) rebuilt split by split{}",
+                        report.layouts_rebuilt,
+                        match report.layouts_abandoned {
+                            0 => String::new(),
+                            n => format!(", {n} abandoned part way"),
+                        }
+                    );
+                }
                 if report.guessed > 0 {
                     println!(
                         "  {} window(s) matched by saved order alone, among windows \
@@ -444,7 +454,9 @@ fn cmd_diff(name: Option<String>, config: &Config, dir: &Path) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let result = diff::compare(&saved, &live, config);
+    let layout = (config.restore.layout != hyprwake::config::LayoutMode::Off)
+        .then(|| hyprwake::layout::LayoutOptions::read(&RealHyprctl));
+    let result = diff::compare(&saved, &live, config, layout.as_ref());
     if result.is_empty() {
         println!("'{}' matches the current desktop.", saved.name);
         return ExitCode::SUCCESS;
@@ -466,6 +478,9 @@ fn cmd_diff(name: Option<String>, config: &Config, dir: &Path) -> ExitCode {
             "Moved:      {} × {} from workspace {} to {}",
             item.count, item.class, item.from, item.to
         );
+    }
+    for item in &result.layout {
+        println!("Layout:     workspace {}: {}", item.workspace, item.what);
     }
     ExitCode::SUCCESS
 }

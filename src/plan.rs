@@ -13,8 +13,10 @@
 
 use crate::browsers::profile_argv;
 use crate::config::Config;
+use crate::config::LayoutMode;
 use crate::config::MissingMonitor;
 use crate::hyprctl::{HyprClient, HyprMonitor};
+use crate::layout::{self, ReplayOp};
 use crate::lua::{lua_long_str, lua_str};
 use crate::matching;
 use crate::provider::ProviderSet;
@@ -22,11 +24,11 @@ use crate::restore::{
     exec_call, grouped_sets, launch_command, workspace_monitors, workspace_move_call,
     RestoreOptions, RestoreReport,
 };
-use crate::session::{Session, SessionClient};
+use crate::session::{LayoutNode, Session, SessionClient, Workspace};
 use crate::topology::{self, Placement};
 use crate::workspace::WorkspaceRef;
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// One thing a restore does. Serialised for `restore --dry-run --json`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -63,6 +65,34 @@ pub enum Step {
         command: String,
         call: String,
     },
+    /// A workspace whose saved split tree is rebuilt, split by split, before
+    /// anything else is launched onto it.
+    LayoutBegin {
+        workspace: String,
+        kind: String,
+        windows: usize,
+        confidence: f32,
+    },
+    /// Launch a window of a tree being rebuilt and wait for it to map: the
+    /// steps after it focus it to split or size it.
+    LayoutSpawn {
+        client: usize,
+        class: String,
+        workspace: String,
+        command: String,
+        call: String,
+    },
+    /// Focus a window of a tree being rebuilt, then send the layout `call`.
+    LayoutMessage {
+        workspace: String,
+        focus: usize,
+        class: String,
+        message: String,
+        call: String,
+    },
+    /// A saved tree that is not rebuilt, and why. Its windows are launched in
+    /// reading order instead.
+    LayoutSkipped { workspace: String, reason: String },
     /// Launch one browser profile in its own window.
     SpawnProfile {
         class: String,
@@ -179,9 +209,58 @@ pub fn plan(
         HashMap::new()
     };
 
+    // Saved trees to rebuild, workspace by workspace, before the windows
+    // launched in reading order.
+    let mode = config.restore.layout;
+    let mut rebuilt: HashSet<usize> = HashSet::new();
+    for ws in &session.workspaces {
+        match layout_replay(session, ws, live, &open, config) {
+            Ok(None) => {}
+            Err(reason) => steps.push(Step::LayoutSkipped {
+                workspace: ws.workspace.selector(),
+                reason,
+            }),
+            Ok(Some((tree, kind))) => {
+                let workspace = ws.workspace.selector();
+                steps.push(Step::LayoutBegin {
+                    workspace: workspace.clone(),
+                    kind: kind.to_string(),
+                    windows: layout::leaves(tree).len(),
+                    confidence: ws.layout_confidence.unwrap_or(0.0),
+                });
+                for op in layout::replay(tree, kind) {
+                    steps.push(match op {
+                        ReplayOp::Spawn(index) => {
+                            let client = &session.clients[index];
+                            rebuilt.insert(index);
+                            let command = launch_command(&client.launch.argv, use_uwsm);
+                            Step::LayoutSpawn {
+                                client: index,
+                                class: client.class.clone(),
+                                workspace: workspace.clone(),
+                                call: exec_call(&command, &client.workspace, client),
+                                command,
+                            }
+                        }
+                        ReplayOp::Message { focus, message } => Step::LayoutMessage {
+                            workspace: workspace.clone(),
+                            focus,
+                            class: session.clients[focus].class.clone(),
+                            call: format!("hl.dsp.layout({})", lua_str(&message)),
+                            message,
+                        },
+                    });
+                }
+            }
+        }
+    }
+
     let mut previous_tiled: Option<String> = None;
     for index in order {
         let client: &SessionClient = &session.clients[index];
+        if rebuilt.contains(&index) {
+            continue;
+        }
         if let Some(address) = open.get(&index) {
             already_open += 1;
             steps.push(Step::AlreadyOpen {
@@ -201,7 +280,9 @@ pub fn plan(
         steps.push(Step::Spawn {
             client: index,
             class: client.class.clone(),
-            wait_for_previous: tiled && previous_tiled.as_deref() == Some(workspace.as_str()),
+            wait_for_previous: tiled
+                && mode != LayoutMode::Off
+                && previous_tiled.as_deref() == Some(workspace.as_str()),
             call: exec_call(&command, &client.workspace, &placed),
             command,
             workspace: workspace.clone(),
@@ -315,7 +396,12 @@ pub fn plan(
 
     let launches = steps
         .iter()
-        .filter(|s| matches!(s, Step::Spawn { .. } | Step::SpawnProfile { .. }))
+        .filter(|s| {
+            matches!(
+                s,
+                Step::Spawn { .. } | Step::SpawnProfile { .. } | Step::LayoutSpawn { .. }
+            )
+        })
         .count();
     RestorePlan {
         steps,
@@ -324,6 +410,65 @@ pub fn plan(
         already_open,
         groups_unrestored: groups.len(),
     }
+}
+
+/// Whether a workspace's saved tree is rebuilt: `Ok(Some)` with the tree and
+/// its kind, `Ok(None)` when there is nothing to decide (reading order is
+/// configured, or nothing was recorded), `Err` with the reason a recorded
+/// tree is passed over.
+fn layout_replay<'a>(
+    session: &'a Session,
+    ws: &'a Workspace,
+    live: &[HyprClient],
+    open: &HashMap<usize, &str>,
+    config: &Config,
+) -> Result<Option<(&'a LayoutNode, &'a str)>, String> {
+    let mode = config.restore.layout;
+    if !matches!(mode, LayoutMode::BestEffort | LayoutMode::Strict) {
+        return Ok(None);
+    }
+    let Some(kind) = ws.layout_kind.as_deref() else {
+        return Ok(None);
+    };
+    let confidence = ws.layout_confidence.unwrap_or(0.0);
+    let Some(tree) = &ws.layout else {
+        return Err("no split tree could be read from its windows when it was saved".into());
+    };
+    if ws.workspace.is_special() {
+        return Err(
+            "a special workspace is an overlay; its windows are not rebuilt as a tree".into(),
+        );
+    }
+    let threshold = config.restore.layout_min_confidence;
+    if mode == LayoutMode::BestEffort && confidence < threshold {
+        return Err(format!(
+            "its tree was read at confidence {confidence:.2}, below the {threshold:.2} \
+             layout_min_confidence"
+        ));
+    }
+    let leaves = layout::leaves(tree);
+    let tiled: HashSet<usize> = session
+        .clients
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.workspace.same(&ws.workspace) && !c.floating)
+        .map(|(i, _)| i)
+        .collect();
+    if leaves.len() != tiled.len() || leaves.iter().any(|i| !tiled.contains(i)) {
+        return Err("its tree does not cover the windows saved on it".into());
+    }
+    if let Some(&i) = leaves.iter().find(|&&i| !session.clients[i].launch.spawn) {
+        return Err(format!(
+            "{} is reopened by its own program, not launched, so it cannot be placed in the tree",
+            session.clients[i].class
+        ));
+    }
+    if leaves.iter().any(|i| open.contains_key(i))
+        || live.iter().any(|w| w.workspace.same(&ws.workspace))
+    {
+        return Err("it already has windows open".into());
+    }
+    Ok(Some((tree, kind)))
 }
 
 /// New geometry for floating windows whose workspace is going to a monitor
@@ -401,6 +546,33 @@ pub fn render(plan: &RestorePlan, opts: &RestoreOptions) -> RestoreReport {
     let out = &mut report.details;
     for step in &plan.steps {
         match step {
+            Step::LayoutBegin {
+                workspace,
+                kind,
+                windows,
+                confidence,
+            } => out.push(format!(
+                "[layout] workspace {workspace}: rebuilding a {kind} tree of {windows} windows \
+                 (confidence {confidence:.2})"
+            )),
+            Step::LayoutSpawn {
+                class,
+                command,
+                call,
+                ..
+            } => {
+                out.push(format!("[dry-run] {class} → {command}"));
+                out.push(format!("  hyprctl dispatch {call}"));
+            }
+            Step::LayoutMessage { class, call, .. } => {
+                out.push(format!(
+                    "  hyprctl dispatch hl.dsp.focus({{ window = <the {class} window> }})"
+                ));
+                out.push(format!("  hyprctl dispatch {call}"));
+            }
+            Step::LayoutSkipped { workspace, reason } => out.push(format!(
+                "[layout] workspace {workspace}: not rebuilt, {reason}; launched in reading order"
+            )),
             Step::ExternalRelaunch {
                 class,
                 provider,
@@ -666,6 +838,121 @@ mod tests {
             p.steps.contains(&Step::Sweep { expect: vec![0, 2] }),
             "an open window is not waited for: {:?}",
             p.steps
+        );
+    }
+
+    fn tree_session(spawn_second: bool) -> Session {
+        use crate::layout::tests::{leaf, node};
+        let mut second = saved("code", (2, "2"), 900);
+        second.launch.spawn = spawn_second;
+        let mut s = session(vec![saved("foot", (2, "2"), 0), second]);
+        s.workspaces = vec![Workspace {
+            workspace: WorkspaceRef::new(2, "2"),
+            monitor: "eDP-1".into(),
+            layout: Some(node(
+                crate::session::Axis::Horizontal,
+                0.5,
+                leaf(0),
+                leaf(1),
+            )),
+            layout_kind: Some("dwindle".into()),
+            layout_confidence: Some(1.0),
+        }];
+        s
+    }
+
+    fn with_layout(mode: LayoutMode) -> Config {
+        let mut c = config();
+        c.restore.layout = mode;
+        c
+    }
+
+    #[test]
+    fn reading_order_ignores_a_recorded_tree() {
+        let p = plan(
+            &tree_session(true),
+            &[],
+            None,
+            &config(),
+            &RestoreOptions::default(),
+            false,
+        );
+        assert!(!p.steps.iter().any(|s| matches!(
+            s,
+            Step::LayoutBegin { .. } | Step::LayoutSkipped { .. } | Step::LayoutSpawn { .. }
+        )));
+        assert_eq!(spawned(&p).len(), 2);
+    }
+
+    #[test]
+    fn best_effort_rebuilds_the_tree_instead_of_launching_in_reading_order() {
+        let p = plan(
+            &tree_session(true),
+            &[],
+            None,
+            &with_layout(LayoutMode::BestEffort),
+            &RestoreOptions::default(),
+            false,
+        );
+        assert!(
+            spawned(&p).is_empty(),
+            "no reading-order launch for a rebuilt window"
+        );
+        let rebuilt: Vec<usize> = p
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::LayoutSpawn { client, .. } => Some(*client),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rebuilt, vec![0, 1]);
+        assert_eq!(p.launches, 2);
+        assert!(p.steps.contains(&Step::Sweep { expect: vec![0, 1] }));
+    }
+
+    #[test]
+    fn a_tree_is_not_rebuilt_around_windows_hyprwake_does_not_launch() {
+        let p = plan(
+            &tree_session(false),
+            &[],
+            None,
+            &with_layout(LayoutMode::Strict),
+            &RestoreOptions::default(),
+            false,
+        );
+        assert!(p.steps.iter().any(|s| matches!(s,
+            Step::LayoutSkipped { reason, .. } if reason.contains("reopened by its own program"))));
+        // nor onto a workspace that already has windows
+        let busy = plan(
+            &tree_session(true),
+            &[live("mpv", (2, "2"))],
+            None,
+            &with_layout(LayoutMode::Strict),
+            &RestoreOptions::default(),
+            false,
+        );
+        assert!(busy.steps.iter().any(|s| matches!(s,
+            Step::LayoutSkipped { reason, .. } if reason.contains("already has windows"))));
+    }
+
+    #[test]
+    fn off_launches_without_waiting_for_tiles() {
+        let s = session(vec![
+            saved("foot", (1, "1"), 0),
+            saved("code", (1, "1"), 900),
+        ]);
+        let p = plan(
+            &s,
+            &[],
+            None,
+            &with_layout(LayoutMode::Off),
+            &RestoreOptions::default(),
+            false,
+        );
+        assert_eq!(
+            spawned(&p),
+            vec![("foot".into(), false), ("code".into(), false)]
         );
     }
 

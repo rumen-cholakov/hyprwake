@@ -100,23 +100,30 @@ pub struct Workspace {
     /// The monitor this workspace lived on, by connector name.
     #[serde(default)]
     pub monitor: String,
-    /// Inferred split tree, when confidence was high enough. Written from
-    /// 0.2.0 onwards once layout inference is enabled; `None` means restore
-    /// falls back to reading order.
+    /// The split tree its tiled windows were in, inferred from their
+    /// geometry at save (`layout.rs`). `None` when no tree could be read,
+    /// or the snapshot predates inference; restore then launches in reading
+    /// order.
     #[serde(default)]
     pub layout: Option<LayoutNode>,
-    /// `"dwindle"` or `"master"`.
+    /// `"dwindle"`, or `"master-<side>"` with the side the masters were on
+    /// (`left`, `right`, `top`, `bottom`). Absent for a layout inference
+    /// does not understand.
     #[serde(default)]
     pub layout_kind: Option<String>,
+    /// 0.0–1.0: how cleanly the windows tiled the workspace. 1.0 is a clean
+    /// tiling; 0.0 means no tree was recorded.
     #[serde(default)]
     pub layout_confidence: Option<f32>,
 }
 
-/// A binary split tree over the windows of one workspace.
+/// A binary split tree over the tiled windows of one workspace.
 ///
 /// The inference that produces one lives in `layout.rs`; the type lives here
 /// because it is part of the on-disk schema and has to version with it.
-/// `Leaf` indexes into the workspace's own clients, in saved order.
+/// `Leaf` is an index into the session's `clients`. A `Split` divides its box
+/// along `axis` — `Horizontal` puts `a` left of `b`, `Vertical` puts `a`
+/// above `b` — and `ratio` is the share of the box `a` takes, 0.0–1.0.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "node", rename_all = "kebab-case")]
 pub enum LayoutNode {

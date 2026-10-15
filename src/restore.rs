@@ -65,6 +65,10 @@ pub struct RestoreReport {
     pub focus_restored: bool,
     /// Windows the session wanted that were already open.
     pub already_open: usize,
+    /// Workspaces whose saved split tree was rebuilt, and those where the
+    /// rebuild was abandoned part way (the details say why).
+    pub layouts_rebuilt: usize,
+    pub layouts_abandoned: usize,
     /// Pairings that nothing but saved order decided: several saved windows
     /// were equally good candidates. Each is named in the log.
     pub guessed: usize,
@@ -247,9 +251,107 @@ fn execute(
     let mut initial = Some(initial);
     let mut paired: HashMap<usize, String> = HashMap::new();
     let mut explained_config_manager = false;
+    // Layout rebuilds: the window each launched client turned into, the
+    // workspaces begun, and those given up on, with why.
+    let mut anchors: HashMap<usize, String> = HashMap::new();
+    let mut begun: Vec<String> = Vec::new();
+    let mut abandoned: BTreeMap<String, String> = BTreeMap::new();
 
     for step in &plan.steps {
         match step {
+            Step::LayoutBegin {
+                workspace,
+                kind,
+                windows,
+                confidence,
+            } => {
+                begun.push(workspace.clone());
+                log(format!(
+                    "layout: rebuilding workspace {workspace}, a {kind} tree of {windows} \
+                     windows at confidence {confidence:.2}"
+                ));
+            }
+            Step::LayoutSpawn {
+                client,
+                class,
+                workspace,
+                call,
+                ..
+            } => {
+                let known: HashSet<String> = live_windows(hyprctl, config)
+                    .map(|ws| ws.into_iter().map(|w| w.address).collect())
+                    .unwrap_or_default();
+                match hyprctl.dispatch(call) {
+                    Ok(()) => {
+                        report.spawned += 1;
+                        if opts.verbose {
+                            report.details.push(format!("spawn {class} → {workspace}"));
+                        }
+                        if !abandoned.contains_key(workspace) {
+                            match wait_for_new(hyprctl, config, workspace, &known) {
+                                Some(address) => {
+                                    anchors.insert(*client, address);
+                                }
+                                None => abandon(
+                                    &mut abandoned,
+                                    workspace,
+                                    format!("{class} did not appear on it in time"),
+                                ),
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        report.failed += 1;
+                        report.details.push(format!("FAIL spawn {class}: {e}"));
+                        log(format!("spawn failed for {class}: {e}"));
+                        abandon(
+                            &mut abandoned,
+                            workspace,
+                            format!("launching {class} failed"),
+                        );
+                    }
+                }
+            }
+            Step::LayoutMessage {
+                workspace,
+                focus,
+                class,
+                message,
+                call,
+            } => {
+                if abandoned.contains_key(workspace) {
+                    continue;
+                }
+                let Some(address) = anchors.get(focus) else {
+                    abandon(
+                        &mut abandoned,
+                        workspace,
+                        format!("the {class} window to {message} from is missing"),
+                    );
+                    continue;
+                };
+                let focus_call = format!(
+                    "hl.dsp.focus({{ window = {} }})",
+                    lua_str(&format!("address:{address}"))
+                );
+                if let Err(e) = hyprctl
+                    .dispatch(&focus_call)
+                    .and_then(|()| hyprctl.dispatch(call))
+                {
+                    abandon(
+                        &mut abandoned,
+                        workspace,
+                        format!("\"{message}\" was refused: {e}"),
+                    );
+                }
+            }
+            Step::LayoutSkipped { workspace, reason } => {
+                let msg = format!("layout: workspace {workspace} not rebuilt: {reason}");
+                log(msg.clone());
+                if opts.verbose {
+                    report.details.push(msg);
+                }
+            }
             Step::ExternalRelaunch {
                 class,
                 provider,
@@ -349,7 +451,22 @@ fn execute(
                 sleep(Duration::from_millis(config.general.spawn_stagger_ms));
             }
             Step::Sweep { expect } => {
-                let seen = initial.take().unwrap_or_default();
+                // Windows a layout rebuild already pinned down are paired, not
+                // swept: the sweep could hand them to another saved entry of
+                // the same class.
+                let mut seen: HashSet<String> = initial
+                    .take()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|c| c.address)
+                    .collect();
+                seen.extend(anchors.values().cloned());
+                paired.extend(anchors.iter().map(|(i, a)| (*i, a.clone())));
+                let expect: Vec<usize> = expect
+                    .iter()
+                    .copied()
+                    .filter(|i| !anchors.contains_key(i))
+                    .collect();
                 // Place windows where the plan put them, which is where they
                 // were saved unless their monitor changed.
                 let mut placed = session.clone();
@@ -359,7 +476,7 @@ fn execute(
                 }
                 paired.extend(sweep(
                     &placed,
-                    expect,
+                    &expect,
                     hyprctl,
                     config,
                     opts,
@@ -417,7 +534,69 @@ fn execute(
             }
         }
     }
+
+    for workspace in &begun {
+        match abandoned.get(workspace) {
+            Some(why) => {
+                report.layouts_abandoned += 1;
+                report.details.push(format!(
+                    "layout on workspace {workspace} not rebuilt: {why}; its other windows \
+                     were launched without it"
+                ));
+            }
+            None => {
+                report.layouts_rebuilt += 1;
+                if opts.verbose {
+                    report
+                        .details
+                        .push(format!("layout on workspace {workspace} rebuilt"));
+                }
+            }
+        }
+    }
     report
+}
+
+/// Give up rebuilding a workspace's tree, keeping the first reason.
+fn abandon(abandoned: &mut BTreeMap<String, String>, workspace: &str, why: String) {
+    abandoned.entry(workspace.to_string()).or_insert_with(|| {
+        log(format!("layout: workspace {workspace}: {why}"));
+        why
+    });
+}
+
+/// How long a window launched for a layout rebuild may take to map, when
+/// `tiled_map_timeout_ms` is 0. Rebuilding cannot go on without it: the next
+/// split is made from it.
+const LAYOUT_MAP_TIMEOUT_MS: u64 = 10_000;
+
+/// The address of a window that maps on `workspace` and is not one of
+/// `known`, or `None` once the wait runs out.
+fn wait_for_new(
+    hyprctl: &dyn HyprctlClient,
+    config: &Config,
+    workspace: &str,
+    known: &HashSet<String>,
+) -> Option<String> {
+    let budget = match config.general.tiled_map_timeout_ms {
+        0 => LAYOUT_MAP_TIMEOUT_MS,
+        ms => ms,
+    };
+    let deadline = Instant::now() + Duration::from_millis(budget);
+    loop {
+        if let Ok(windows) = live_windows(hyprctl, config) {
+            if let Some(w) = windows
+                .into_iter()
+                .find(|w| w.workspace.selector() == workspace && !known.contains(&w.address))
+            {
+                return Some(w.address);
+            }
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        sleep(Duration::from_millis(MAP_POLL_MS));
+    }
 }
 
 fn focus(hyprctl: &dyn HyprctlClient, call: &str, report: &mut RestoreReport) {
@@ -428,14 +607,16 @@ fn focus(hyprctl: &dyn HyprctlClient, call: &str, report: &mut RestoreReport) {
 }
 
 /// Pair windows that appeared after the spawns with their saved entries and
-/// place the ones the exec rules could not reach.
+/// place the ones the exec rules could not reach. `seen` are the windows
+/// that are not candidates: those open before the restore, and those already
+/// paired.
 fn sweep(
     session: &Session,
     expect: &[usize],
     hyprctl: &dyn HyprctlClient,
     config: &Config,
     opts: &RestoreOptions,
-    initial: Vec<crate::hyprctl::HyprClient>,
+    mut seen: HashSet<String>,
     report: &mut RestoreReport,
 ) -> HashMap<usize, String> {
     // Which live window each saved client turned into, so later steps can
@@ -448,7 +629,6 @@ fn sweep(
         .map(|(i, c)| (c as *const SessionClient, i))
         .collect();
     let mut pending: Vec<&SessionClient> = expect.iter().map(|&i| &session.clients[i]).collect();
-    let mut seen: HashSet<String> = initial.into_iter().map(|c| c.address).collect();
 
     let deadline = Instant::now() + Duration::from_secs(config.general.sweep_timeout_secs);
     let poll = Duration::from_millis(config.general.sweep_poll_ms);
@@ -1313,6 +1493,204 @@ profile_workspaces = { "Profile 1" = "3" }
             .filter(|d| d.contains("Lua config manager"))
             .count();
         assert_eq!(explained, 1, "{:?}", report.details);
+    }
+
+    // ── layout rebuild ──
+
+    /// A compositor that maps each launched window one poll later, on the
+    /// workspace its launch rule names, and logs every dispatch in order.
+    /// Classes in `never` launch but never map.
+    struct Tiler {
+        launched: RefCell<Vec<(String, String, usize)>>,
+        polls: RefCell<usize>,
+        log: RefCell<Vec<String>>,
+        never: Vec<String>,
+    }
+
+    impl Tiler {
+        fn new(never: &[&str]) -> Self {
+            Tiler {
+                launched: RefCell::new(vec![]),
+                polls: RefCell::new(0),
+                log: RefCell::new(vec![]),
+                never: never.iter().map(|s| s.to_string()).collect(),
+            }
+        }
+        fn log(&self) -> Vec<String> {
+            self.log.borrow().clone()
+        }
+    }
+
+    impl HyprctlClient for Tiler {
+        fn get_clients(&self) -> Result<Vec<HyprClient>, crate::hyprctl::HyprctlError> {
+            *self.polls.borrow_mut() += 1;
+            let now = *self.polls.borrow();
+            Ok(self
+                .launched
+                .borrow()
+                .iter()
+                .enumerate()
+                .filter(|(_, (class, _, at))| now >= *at && !self.never.contains(class))
+                .map(|(i, (class, ws, _))| {
+                    live(class, (ws.parse().unwrap(), ws), &format!("0x{i}"))
+                })
+                .collect())
+        }
+        fn get_monitors(
+            &self,
+        ) -> Result<Vec<crate::hyprctl::HyprMonitor>, crate::hyprctl::HyprctlError> {
+            Ok(vec![])
+        }
+        fn dispatch(&self, call: &str) -> Result<(), crate::hyprctl::HyprctlError> {
+            if let Some(rest) = call.strip_prefix("hl.dsp.exec_cmd([[") {
+                let class = rest.split("]]").next().unwrap().to_string();
+                let ws = call
+                    .split("workspace = '")
+                    .nth(1)
+                    .and_then(|s| s.split(' ').next())
+                    .unwrap()
+                    .to_string();
+                let at = *self.polls.borrow() + 1;
+                self.launched.borrow_mut().push((class.clone(), ws, at));
+                self.log.borrow_mut().push(format!("launch {class}"));
+            } else if let Some(rest) = call.strip_prefix("hl.dsp.focus({ window = 'address:") {
+                let address = rest.split('\'').next().unwrap();
+                let i: usize = address.trim_start_matches("0x").parse().unwrap();
+                let class = self.launched.borrow()[i].0.clone();
+                self.log.borrow_mut().push(format!("focus {class}"));
+            } else if let Some(rest) = call.strip_prefix("hl.dsp.layout('") {
+                self.log
+                    .borrow_mut()
+                    .push(format!("layout {}", rest.trim_end_matches("')")));
+            }
+            Ok(())
+        }
+        fn get_hyprland_version(&self) -> Result<String, crate::hyprctl::HyprctlError> {
+            Ok("0.56.2".into())
+        }
+    }
+
+    /// foot | (code over kitty) on workspace 3, recorded at full confidence.
+    fn layout_session(confidence: f32) -> Session {
+        use crate::layout::tests::{leaf, node};
+        use crate::session::Axis;
+        let mut s = session_of(vec![
+            saved("foot", (3, "3")),
+            saved("code", (3, "3")),
+            saved("kitty", (3, "3")),
+        ]);
+        s.workspaces = vec![crate::session::Workspace {
+            workspace: WorkspaceRef::new(3, "3"),
+            monitor: "eDP-1".into(),
+            layout: Some(node(
+                Axis::Horizontal,
+                0.6,
+                leaf(0),
+                node(Axis::Vertical, 0.3, leaf(1), leaf(2)),
+            )),
+            layout_kind: Some("dwindle".into()),
+            layout_confidence: Some(confidence),
+        }];
+        s
+    }
+
+    fn layout_config(mode: crate::config::LayoutMode) -> Config {
+        let mut c = fast_config();
+        c.general.sweep_timeout_secs = 1;
+        c.general.tiled_map_timeout_ms = 300;
+        c.restore.layout = mode;
+        c
+    }
+
+    #[test]
+    fn a_saved_tree_is_rebuilt_split_by_split() {
+        let hypr = Tiler::new(&[]);
+        let report = restore_session(
+            &layout_session(0.95),
+            &hypr,
+            &layout_config(crate::config::LayoutMode::BestEffort),
+            &RestoreOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            hypr.log(),
+            vec![
+                "launch foot",
+                "focus foot",
+                "layout preselect r",
+                "launch code",
+                "focus foot",
+                "layout splitratio 1.200 exact",
+                "focus code",
+                "layout preselect d",
+                "launch kitty",
+                "focus code",
+                "layout splitratio 0.600 exact",
+                // The restore ends on the window that had focus, which the
+                // rebuild already knows.
+                "focus foot",
+            ]
+        );
+        assert_eq!(report.layouts_rebuilt, 1);
+        assert_eq!(report.spawned, 3);
+        assert_eq!(report.unmatched, 0, "rebuilt windows are already paired");
+    }
+
+    #[test]
+    fn a_window_that_never_maps_abandons_the_rebuild_but_not_the_restore() {
+        let hypr = Tiler::new(&["code"]);
+        let report = restore_session(
+            &layout_session(0.95),
+            &hypr,
+            &layout_config(crate::config::LayoutMode::BestEffort),
+            &RestoreOptions::default(),
+        )
+        .unwrap();
+        let log = hypr.log();
+        assert!(log.contains(&"launch kitty".to_string()), "{log:?}");
+        assert!(
+            !log.iter().any(|l| l.contains("preselect d")),
+            "no split is made from a window that is not there: {log:?}"
+        );
+        assert_eq!(report.layouts_abandoned, 1);
+        assert!(
+            report
+                .details
+                .iter()
+                .any(|d| d.contains("workspace 3 not rebuilt") && d.contains("code")),
+            "{:?}",
+            report.details
+        );
+    }
+
+    #[test]
+    fn a_tree_below_the_confidence_bar_is_launched_in_reading_order() {
+        let hypr = Tiler::new(&[]);
+        let opts = RestoreOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let low = layout_session(0.4);
+        let config = layout_config(crate::config::LayoutMode::BestEffort);
+        let report = restore_session(&low, &hypr, &config, &opts).unwrap();
+        assert!(
+            report.details[0].contains("not rebuilt") && report.details[0].contains("0.40"),
+            "{:?}",
+            report.details
+        );
+        assert!(!report.details.iter().any(|d| d.contains("preselect")));
+
+        let strict = layout_config(crate::config::LayoutMode::Strict);
+        let report = restore_session(&low, &hypr, &strict, &opts).unwrap();
+        assert!(
+            report.details[0].starts_with("[layout] workspace 3: rebuilding a dwindle tree of 3"),
+            "{:?}",
+            report.details
+        );
+        assert!(report
+            .details
+            .iter()
+            .any(|d| d.contains("hl.dsp.layout('preselect r')")));
     }
 
     // ── external providers ──

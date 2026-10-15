@@ -6,6 +6,7 @@ pub mod diff;
 pub mod doctor;
 pub mod external;
 pub mod hyprctl;
+pub mod layout;
 pub mod logging;
 pub mod lua;
 pub mod matching;

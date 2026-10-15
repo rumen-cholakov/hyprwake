@@ -113,6 +113,13 @@ pub trait HyprctlClient {
     /// single argument, so Lua expressions survive intact.
     fn dispatch(&self, call: &str) -> Result<(), HyprctlError>;
     fn get_hyprland_version(&self) -> Result<String, HyprctlError>;
+    /// One configuration value, as `hyprctl -j getoption` reports it
+    /// (`{"int": 5}`, `{"css": "5 5 5 5"}`, `{"str": "dwindle"}`, …), or
+    /// `None` when it cannot be read. Only layout inference asks, and it
+    /// falls back to Hyprland's defaults.
+    fn get_option(&self, _name: &str) -> Option<serde_json::Value> {
+        None
+    }
 }
 
 // ── Real implementation ────────────────────────────────────────────────────
@@ -160,6 +167,17 @@ impl HyprctlClient for RealHyprctl {
         Ok(())
     }
 
+    fn get_option(&self, name: &str) -> Option<serde_json::Value> {
+        let output = Command::new("hyprctl")
+            .args(["-j", "getoption", name])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        serde_json::from_slice(&output.stdout).ok()
+    }
+
     fn get_hyprland_version(&self) -> Result<String, HyprctlError> {
         let output = Command::new("hyprctl").arg("version").output()?;
         if !output.status.success() {
@@ -191,6 +209,8 @@ pub mod mock {
         pub client_frames: RefCell<Vec<Vec<HyprClient>>>,
         pub monitors: Vec<HyprMonitor>,
         pub reject: Option<String>,
+        /// `getoption` answers by name; anything absent reads as unknown.
+        pub options: std::collections::HashMap<String, serde_json::Value>,
     }
 
     impl Default for MockHyprctl {
@@ -220,6 +240,7 @@ pub mod mock {
                     y: 0,
                 }],
                 reject: None,
+                options: Default::default(),
             }
         }
 
@@ -256,6 +277,10 @@ pub mod mock {
 
         fn get_hyprland_version(&self) -> Result<String, HyprctlError> {
             Ok("0.56.2-mock".to_string())
+        }
+
+        fn get_option(&self, name: &str) -> Option<serde_json::Value> {
+            self.options.get(name).cloned()
         }
     }
 }

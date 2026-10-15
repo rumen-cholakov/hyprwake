@@ -2,9 +2,10 @@
 
 use crate::config::Config;
 use crate::hyprctl::HyprClient;
+use crate::layout::{self, LayoutOptions, Rect};
 use crate::matching;
 use crate::session::{Session, SessionClient};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct SessionDiff {
@@ -13,6 +14,15 @@ pub struct SessionDiff {
     /// Saved windows that are open, but on another workspace: what a restore
     /// would move rather than launch.
     pub moved: Vec<WindowMove>,
+    /// Workspaces whose windows are all there but no longer tiled the way
+    /// the saved tree says.
+    pub layout: Vec<LayoutDrift>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct LayoutDrift {
+    pub workspace: String,
+    pub what: &'static str,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -34,7 +44,15 @@ pub struct WindowMove {
 /// left over. Output is counts by class and workspace only: titles take part
 /// in pairing, as they do in restore, but never appear in the result, and
 /// command lines and paths are not looked at.
-pub fn compare(saved: &Session, live: &[HyprClient], config: &Config) -> SessionDiff {
+///
+/// With `layout`, each workspace that has a saved split tree is also compared
+/// with the tree its windows are in now.
+pub fn compare(
+    saved: &Session,
+    live: &[HyprClient],
+    config: &Config,
+    layout: Option<&LayoutOptions>,
+) -> SessionDiff {
     let live: Vec<&HyprClient> = live
         .iter()
         .filter(|c| c.is_restorable() && !config.is_ignored(&c.class))
@@ -43,12 +61,14 @@ pub fn compare(saved: &Session, live: &[HyprClient], config: &Config) -> Session
     let pairs = matching::pair_all(&entries, &live);
 
     let mut used = vec![false; entries.len()];
+    let mut now: HashMap<usize, &HyprClient> = HashMap::new();
     let mut unexpected: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut moved: BTreeMap<(String, String, String), usize> = BTreeMap::new();
     for (window, pair) in live.iter().zip(pairs) {
         match pair {
             Some((i, _)) => {
                 used[i] = true;
+                now.insert(i, window);
                 let entry = entries[i];
                 if !entry.workspace.same(&window.workspace) {
                     *moved
@@ -77,6 +97,9 @@ pub fn compare(saved: &Session, live: &[HyprClient], config: &Config) -> Session
     SessionDiff {
         missing: counts(missing),
         unexpected: counts(unexpected),
+        layout: layout
+            .map(|opts| layout_drift(saved, &now, opts))
+            .unwrap_or_default(),
         moved: moved
             .into_iter()
             .map(|((class, from, to), count)| WindowMove {
@@ -87,6 +110,46 @@ pub fn compare(saved: &Session, live: &[HyprClient], config: &Config) -> Session
             })
             .collect(),
     }
+}
+
+/// Workspaces whose saved tree no longer describes their windows.
+///
+/// Only where every window of the tree is open, tiled, on that workspace:
+/// anything else is already reported as missing or moved, and a tree over
+/// half its windows says nothing.
+fn layout_drift(
+    saved: &Session,
+    now: &HashMap<usize, &HyprClient>,
+    opts: &LayoutOptions,
+) -> Vec<LayoutDrift> {
+    let mut out = Vec::new();
+    for ws in &saved.workspaces {
+        let Some(tree) = &ws.layout else {
+            continue;
+        };
+        let rects: Option<Vec<(usize, Rect)>> = layout::leaves(tree)
+            .into_iter()
+            .map(|i| {
+                now.get(&i)
+                    .filter(|w| w.workspace.same(&ws.workspace) && !w.floating)
+                    .map(|w| (i, Rect::new(w.at, w.size)))
+            })
+            .collect();
+        let Some(rects) = rects else {
+            continue;
+        };
+        let what = match layout::infer(&rects, opts) {
+            None => "its windows no longer tile it",
+            Some(current) if layout::same(tree, &current.tree, 0.05) => continue,
+            Some(current) if layout::same(tree, &current.tree, 1.0) => "split ratios differ",
+            Some(_) => "arrangement differs",
+        };
+        out.push(LayoutDrift {
+            workspace: ws.workspace.selector(),
+            what,
+        });
+    }
+    out
 }
 
 fn counts(map: BTreeMap<(String, String), usize>) -> Vec<WindowCount> {
@@ -101,7 +164,10 @@ fn counts(map: BTreeMap<(String, String), usize>) -> Vec<WindowCount> {
 
 impl SessionDiff {
     pub fn is_empty(&self) -> bool {
-        self.missing.is_empty() && self.unexpected.is_empty() && self.moved.is_empty()
+        self.missing.is_empty()
+            && self.unexpected.is_empty()
+            && self.moved.is_empty()
+            && self.layout.is_empty()
     }
 }
 
@@ -177,6 +243,7 @@ mod tests {
             &saved,
             &[live_client("foot", 1), live_client("kitty", 3)],
             &config,
+            None,
         );
 
         assert_eq!(
@@ -220,6 +287,7 @@ mod tests {
             &session_of(vec![session_client("foot", 1), session_client("foot", 2)]),
             &[live_client("foot", 2), live_client("foot", 5)],
             &config,
+            None,
         );
         assert!(result.missing.is_empty(), "{result:?}");
         assert!(result.unexpected.is_empty(), "{result:?}");
@@ -243,7 +311,62 @@ mod tests {
             &session_of(vec![session_client("org.gnome.Nautilus", 4)]),
             &[renamed],
             &config,
+            None,
         );
         assert!(result.is_empty(), "{result:?}");
+    }
+
+    #[test]
+    fn a_workspace_tiled_differently_from_its_saved_tree_is_reported() {
+        use crate::layout::tests::{leaf, node};
+        use crate::session::{Axis, Workspace};
+        let config: Config = toml::from_str("").unwrap();
+        let mut a = session_client("foot", 1);
+        let mut b = session_client("code", 1);
+        (a.at, a.size) = ([21, 21], [933, 1038]);
+        (b.at, b.size) = ([966, 21], [933, 1038]);
+        let mut saved = session_of(vec![a, b]);
+        saved.workspaces = vec![Workspace {
+            workspace: WorkspaceRef::new(1, "1"),
+            monitor: String::new(),
+            layout: Some(node(Axis::Horizontal, 0.5, leaf(0), leaf(1))),
+            layout_kind: Some("dwindle".into()),
+            layout_confidence: Some(1.0),
+        }];
+        let opts = LayoutOptions::default();
+        let tiled = |c: &str, at: [i32; 2], size: [i32; 2]| {
+            let mut w = live_client(c, 1);
+            (w.at, w.size) = (at, size);
+            w
+        };
+        let same = [
+            tiled("foot", [21, 21], [933, 1038]),
+            tiled("code", [966, 21], [933, 1038]),
+        ];
+        assert!(compare(&saved, &same, &config, Some(&opts)).is_empty());
+
+        let wider = [
+            tiled("foot", [21, 21], [1300, 1038]),
+            tiled("code", [1333, 21], [566, 1038]),
+        ];
+        let d = compare(&saved, &wider, &config, Some(&opts));
+        assert_eq!(
+            d.layout,
+            vec![LayoutDrift {
+                workspace: "1".into(),
+                what: "split ratios differ"
+            }]
+        );
+
+        let swapped = [
+            tiled("code", [21, 21], [933, 1038]),
+            tiled("foot", [966, 21], [933, 1038]),
+        ];
+        let d = compare(&saved, &swapped, &config, Some(&opts));
+        assert_eq!(d.layout[0].what, "arrangement differs");
+        assert!(
+            compare(&saved, &swapped, &config, None).is_empty(),
+            "without layout options there is no layout comparison"
+        );
     }
 }

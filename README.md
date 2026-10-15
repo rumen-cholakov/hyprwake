@@ -29,9 +29,10 @@ hyprwake doctor               # what would happen if you did
 | TUIs | `nvim`, `yazi`, `btop`, `lazygit`… relaunched inside the terminal, in their own directory |
 | Sessions | a program that can reopen its own session is asked to — Claude Code and codex come back on the same conversation, not a blank one |
 | Floating windows | pixel-exact position and size |
+| Tiling | opt-in: each workspace's dwindle or master split tree, read back from window geometry and rebuilt split by split when it was read cleanly; reading order otherwise |
 | Window state | pinned, fullscreen, maximized |
 | Browser profiles | one window per profile, each on its own workspace — Chromium family via `Local State`, Firefox family via `profiles.ini` |
-| Focus | never stolen — everything is placed silently, in the background |
+| Focus | never stolen — everything is placed silently, in the background; a layout rebuild focuses windows to split them, and hands focus back where it was saved |
 
 ## How it works
 
@@ -288,6 +289,34 @@ With `remap` or `collapse`, a display is recognised by serial, then make and
 model, then connector — so the same monitor on another port keeps its
 workspaces, and a different monitor on a familiar port does not inherit them.
 
+Tiling is recorded at every save: for each workspace, the split tree its
+tiled windows were in, read back from where they sit, and how cleanly they
+tiled. Rebuilding it is opt-in:
+
+```toml
+[restore]
+layout = "reading-order"     # default: launch tiled windows in their saved
+                             # reading order, each after the one before maps
+# layout = "best-effort"     # rebuild each workspace's tree split by split
+                             # where it was read with enough confidence
+# layout = "strict"          # rebuild every recorded tree, however unsure
+# layout = "off"             # record nothing, wait for nothing
+layout_min_confidence = 0.7
+```
+
+A rebuild launches a workspace's windows one at a time, focusing each to
+split it with `preselect` and setting the ratio with `splitratio`, so it is
+slower than reading order and moves focus while it runs. It needs Hyprland's
+dwindle or master layout. With `dwindle:preserve_split` off, Hyprland derives
+every split's direction from its shape, so a rebuilt tree reflows when a
+window is resized — `doctor` warns about it. A workspace is launched in
+reading order instead, and `--verbose` says why, when its tree was read below
+the confidence bar (a pseudotiled window, gaps that are not the configured
+ones), when it already has windows open, when one of its windows is reopened
+by its own program rather than launched, or when it is a special workspace.
+`hyprwake diff` reports a workspace whose windows are all open but tiled
+differently from the snapshot.
+
 For an application none of the built-in kinds fits, `kind = "external"`
 hands capture and relaunch to a helper program you write, speaking JSON;
 hyprwake runs it only if nobody but you can change it, and checks what it
@@ -307,10 +336,14 @@ table when you list any — and are read into the same providers.
   in practice — and the `group` spawn rule joins whatever is focused, which a
   silent restore never is. The data is captured so this becomes a small change
   the day a targeted dispatcher exists.
-- **Exact tiling layout.** Hyprland does not expose the dwindle/master split
-  tree. Windows return to the right workspace in their old reading order and
-  re-tile from there — close, but not split-for-split identical. Floating
-  windows *are* exact.
+- **Every tiling, every time.** The split tree is inferred from window
+  geometry — Hyprland does not expose it — and rebuilt only where it was read
+  cleanly, with `[restore] layout = "best-effort"`, which is not the default.
+  Windows reopened by their own program (a browser's second window, an
+  Electron app's) arrive when they arrive, so a workspace holding one comes
+  back in reading order; so do fullscreen and grouped windows' workspaces,
+  special workspaces, and layouts other than dwindle and master (scrolling,
+  centred master, a plugin's). Floating windows are always exact.
 - **In-app state.** Scrollback, unsaved edits, scroll positions — except
   where a program can reopen its own session, which is what `[tui.resume]`
   is for. Content

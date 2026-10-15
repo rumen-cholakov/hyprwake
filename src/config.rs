@@ -30,6 +30,51 @@ pub struct Config {
     pub providers: BTreeMap<String, crate::provider::ProviderEntry>,
     #[serde(default)]
     pub monitors: MonitorConfig,
+    #[serde(default)]
+    pub restore: RestoreConfig,
+}
+
+/// How a restore rebuilds each workspace's tiling.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RestoreConfig {
+    #[serde(default)]
+    pub layout: LayoutMode,
+    /// `best-effort` replays a workspace's split tree only at or above this
+    /// confidence, which capture records alongside the tree.
+    #[serde(default = "default_layout_min_confidence")]
+    pub layout_min_confidence: f32,
+}
+
+impl Default for RestoreConfig {
+    fn default() -> Self {
+        RestoreConfig {
+            layout: LayoutMode::default(),
+            layout_min_confidence: default_layout_min_confidence(),
+        }
+    }
+}
+
+fn default_layout_min_confidence() -> f32 {
+    0.7
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LayoutMode {
+    /// No layout work: no tree is inferred at save, and tiled windows are
+    /// launched without waiting for one another.
+    Off,
+    /// Tiled windows launched in their saved reading order, each waiting
+    /// for the one before it on its workspace — the 0.1.x restore, with the
+    /// later tiled-order fix.
+    #[default]
+    ReadingOrder,
+    /// Replay the saved split tree wherever capture was confident enough,
+    /// and reading order elsewhere.
+    BestEffort,
+    /// Replay every saved tree, however low its confidence. For debugging
+    /// inference.
+    Strict,
 }
 
 /// Where workspaces go when the monitors attached now are not the ones they
@@ -521,6 +566,7 @@ impl Default for Config {
             browsers: HashMap::new(),
             providers: BTreeMap::new(),
             monitors: MonitorConfig::default(),
+            restore: RestoreConfig::default(),
         }
     }
 }
@@ -684,6 +730,7 @@ mod tests {
             "serde defaults and Default::default() must populate the same tables"
         );
         assert_eq!(from_file.tui.programs, from_default.tui.programs);
+        assert_eq!(from_file.restore, from_default.restore);
         assert_eq!(
             from_file.filters.ignore_classes,
             from_default.filters.ignore_classes
