@@ -241,8 +241,9 @@ pub struct ResumeConfig {
     #[serde(default)]
     pub fd_glob: Option<String>,
     /// Command whose first line of output is the session id. `{cwd}`,
-    /// `{cwd_sql}` (single quotes doubled) and `{home}` are substituted.
-    /// It runs as you, at save time, with a short timeout.
+    /// `{cwd_sql}` (single quotes doubled), `{home}` and `{pid}` — the
+    /// program's own process id, for asking a server which client is which —
+    /// are substituted. It runs as you, at save time, with a short timeout.
     #[serde(default)]
     pub id_command: Vec<String>,
     /// Arguments appended when an id is recovered; `{id}` is substituted.
@@ -255,6 +256,13 @@ pub struct ResumeConfig {
     /// following one of these is dropped with it.
     #[serde(default)]
     pub strip_flags: Vec<String>,
+    /// Replace the program's arguments rather than add to them: keep the
+    /// program and only these flags, each with its value, then append `args`
+    /// (or `fallback`). For a client whose command has to change shape —
+    /// `tmux -S sock attach -t work` coming back as `tmux -S sock new-session
+    /// -A -s work`, with `keep_flags = ["-S", "-L", "-f"]`.
+    #[serde(default)]
+    pub keep_flags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -490,6 +498,7 @@ fn default_resume_rules() -> HashMap<String, ResumeConfig> {
                 "--continue".to_string(),
                 "-c".to_string(),
             ],
+            keep_flags: None,
         },
     );
     // codex keeps no per-session file open; its state database records the
@@ -522,6 +531,7 @@ fn default_resume_rules() -> HashMap<String, ResumeConfig> {
             args: vec!["resume".to_string(), "{id}".to_string()],
             fallback: vec!["resume".to_string(), "--last".to_string()],
             strip_flags: vec!["resume".to_string(), "--last".to_string()],
+            keep_flags: None,
         },
     );
     // opencode keeps its sessions in SQLite, one row per conversation, keyed
@@ -564,6 +574,7 @@ fn default_resume_rules() -> HashMap<String, ResumeConfig> {
                 "--fork".to_string(),
                 "--prompt".to_string(),
             ],
+            keep_flags: None,
         },
     );
     rules

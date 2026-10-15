@@ -108,7 +108,8 @@ kernel reports it (`/proc/<pid>/comm`).
 
 - `fd_glob` reads the id out of a path the program holds open. Exact.
 - `id_command` runs a helper that prints the id for a directory. `{cwd}`,
-  `{cwd_sql}` (single quotes doubled) and `{home}` are substituted. It runs as
+  `{cwd_sql}` (single quotes doubled), `{home}` and `{pid}` (the program's
+  own process id) are substituted. It runs as
   you, at every save, with a 3-second timeout, and the id it prints is checked
   before it reaches a command line.
 
@@ -135,6 +136,30 @@ script argument of `sh -c`, `bash -c`, `python -c`, `perl -e`, `node -e` and
 similar; the rule falls back instead. 0.1.0 to 0.1.3 shipped a codex rule
 that did exactly this — see the 0.2.0 changelog.
 
+### Session managers: the tmux recipe
+
+```toml
+[tui]
+programs = ["nvim", "yazi", "btop", "tmux: client"]
+
+[tui.resume."tmux: client"]
+# The session this client is on, asked of the server by the client's pid.
+# {pid} is passed as a positional parameter; the script never sees it as text.
+id_command = ["sh", "-c",
+  "tmux list-clients -F '#{client_pid} #{session_name}' | awk -v p=\"$1\" '$1 == p { print $2; exit }'",
+  "sh", "{pid}"]
+args = ["new-session", "-A", "-s", "{id}"]
+fallback = ["new-session"]
+keep_flags = ["-S", "-L", "-f"]   # the client's socket and config, kept as they were
+```
+
+`{pid}` is the program's own process id, for asking a server which client is
+which. `keep_flags` turns a rule from adding arguments into replacing them:
+the program and those flags (each with its value) are kept, and `args` — or
+`fallback` — follow. A session name with spaces fails the id check and falls
+back to a new session. With a server on another socket (`-S`), point the
+helper at it too, as `tmux -S <path> list-clients …`.
+
 ## What ships, and why
 
 A shipped default has to keep working across upstream releases nobody here
@@ -159,7 +184,7 @@ with the version recorded.
 | Program | Status | Notes |
 |---|---|---|
 | herdr | shipped | Validated against 0.8.2. Needs nothing: `--session <name>` survives in the client's argv and is replayed, and both `herdr --session <name>` and `herdr session attach <name>` restart a stopped session with its workspaces. |
-| tmux | recipe | Not in `[tui] programs`, so a terminal running tmux comes back as a shell at the host shell's directory. Adding it is not enough on its own: the client's process name is `tmux: client`, not `tmux` (verified against tmux on the validation machine), and its server does not survive a reboot, so a replayed `tmux attach -t work` fails and the terminal closes. The right shape is a rule that rewrites any attach into `tmux new-session -A -s <name>` — which is also what brings the contents back under tmux-resurrect — but recovering `<name>` robustly needs the client's server socket. Unshipped. |
+| tmux | recipe | Validated against tmux 3.7c in a nested compositor. The client's process name is `tmux: client`, and its server does not survive a reboot, so replaying `tmux attach -t work` would fail and close the terminal. The recipe below asks the server which session the client was on, by its pid, and comes back as `tmux new-session -A -s <name>` — attaching if tmux-resurrect restored the session, creating it otherwise — keeping any `-S`/`-L`/`-f`. Not a default: it changes what a terminal running tmux comes back as. |
 | zellij, screen, abduco | recipe | Not installed on the validation machine. |
 
 ### Terminals

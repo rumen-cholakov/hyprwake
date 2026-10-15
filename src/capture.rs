@@ -453,6 +453,12 @@ fn with_resume_args(
             return None;
         }
         let command = crate::resume::render_command(&rule.id_command, cwd, &home_dir())?;
+        // A process id is digits, safe anywhere in a command, script text
+        // included.
+        let command: Vec<String> = command
+            .into_iter()
+            .map(|a| a.replace("{pid}", &pid.to_string()))
+            .collect();
         crate::resume::run_id_command(&command, ID_COMMAND_TIMEOUT)
     });
 
@@ -464,9 +470,25 @@ fn with_resume_args(
         return argv;
     }
 
-    let mut argv = strip_flags(argv, &rule.strip_flags);
+    let mut argv = match &rule.keep_flags {
+        Some(keep) => keep_only(argv, keep),
+        None => strip_flags(argv, &rule.strip_flags),
+    };
     argv.extend(extra);
     argv
+}
+
+/// The program, then only the flags in `keep` with the value after each.
+fn keep_only(argv: Vec<String>, keep: &[String]) -> Vec<String> {
+    let mut args = argv.into_iter();
+    let mut out: Vec<String> = args.next().into_iter().collect();
+    while let Some(arg) = args.next() {
+        if keep.contains(&arg) {
+            out.push(arg);
+            out.extend(args.next());
+        }
+    }
+    out
 }
 
 /// Drop `flags` from an argv, along with a value following one of them.
@@ -704,6 +726,7 @@ mod tests {
                 args: vec!["resume".to_string(), "{id}".to_string()],
                 fallback: vec!["resume".to_string(), "--last".to_string()],
                 strip_flags: vec![],
+                keep_flags: None,
             },
         );
         cfg.tui.programs.push("myagent".to_string());
@@ -731,6 +754,7 @@ mod tests {
                 args: vec!["resume".to_string(), "{id}".to_string()],
                 fallback: vec!["resume".to_string(), "--last".to_string()],
                 strip_flags: vec![],
+                keep_flags: None,
             },
         );
         cfg.tui.programs.push("myagent".to_string());
@@ -1243,6 +1267,7 @@ mod tests {
                             args: vec!["--session".to_string(), "{id}".to_string()],
                             fallback: vec![],
                             strip_flags: vec![],
+                            keep_flags: None,
                         },
                     );
                 },
@@ -1548,6 +1573,59 @@ exec_flag = "-e"
         let launch = &session.clients[0].launch;
         assert_eq!(launch.argv, vec!["/usr/bin/mailapp", "--tray"]);
         assert_eq!(launch.provider_state, None);
+    }
+
+    #[test]
+    fn a_session_manager_client_is_reattached_by_a_rule_that_rebuilds_its_command() {
+        let mut cfg = config();
+        cfg.tui.programs.push("tmux: client".to_string());
+        cfg.tui.resume.insert(
+            "tmux: client".to_string(),
+            crate::config::ResumeConfig {
+                fd_glob: None,
+                // Stands in for asking the server: the session for this pid.
+                id_command: vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "printf 'work-%s' \"$1\"".into(),
+                    "sh".into(),
+                    "{pid}".into(),
+                ],
+                args: vec![
+                    "new-session".into(),
+                    "-A".into(),
+                    "-s".into(),
+                    "{id}".into(),
+                ],
+                fallback: vec!["new-session".into()],
+                strip_flags: vec![],
+                keep_flags: Some(vec!["-S".into(), "-L".into(), "-f".into()]),
+            },
+        );
+        let mut proc = MockProcessInfo::default();
+        proc.add(10, "foot", &["foot"], "/");
+        proc.add(
+            12,
+            "tmux: client",
+            &["tmux", "-S", "/run/s", "attach", "-t", "old"],
+            "/w",
+        );
+        proc.link(10, 12);
+        assert_eq!(
+            relaunch_argv(&client("foot", 10), &proc, &cfg).unwrap(),
+            vec![
+                "foot",
+                "-D",
+                "/w",
+                "tmux",
+                "-S",
+                "/run/s",
+                "new-session",
+                "-A",
+                "-s",
+                "work-12"
+            ]
+        );
     }
 
     #[test]

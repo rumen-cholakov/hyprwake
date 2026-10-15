@@ -78,6 +78,15 @@
   by its script (`…/bundle/gemini.js` is `gemini`, `python3 -m aider` is
   `aider`) and reopened by that name, so an upgrade that moves its install
   does not break the restore. None is added to the defaults.
+- **Session managers can be reattached.** A resume `id_command` can now use
+  `{pid}`, the program's own process id, to ask a server which client is
+  which, and a rule with `keep_flags` replaces the program's arguments instead
+  of adding to them. Together they make the tmux recipe in
+  [docs/PROVIDERS.md](docs/PROVIDERS.md): a terminal running tmux comes back as
+  `tmux new-session -A -s <the session it was on>`, socket options kept —
+  attaching if the session was restored, creating it otherwise. Validated
+  against tmux 3.7c in a nested compositor, including a session renamed after
+  it started. A recipe, not a default.
 - **External providers.** `kind = "external"` hands capture and relaunch of
   a window class to a helper program speaking JSON on stdin and stdout, under
   a contract versioned separately from the snapshot schema. The helper runs
