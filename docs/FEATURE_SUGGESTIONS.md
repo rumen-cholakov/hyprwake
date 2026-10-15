@@ -4,6 +4,33 @@ A survey of session save/restore tools for Hyprland and other environments,
 compared against hyprwake 0.1.3 (October 2026). Each suggestion names the
 project it comes from and checks that hyprwake does not already have it.
 
+## Status in 0.2.0
+
+The survey was written before 0.2.0 shipped. Where each suggestion stands
+now, and where it sits in the [roadmap](ROADMAP.md):
+
+| # | Suggestion | Status |
+|---|---|---|
+| 1 | Recover the tiling order | **Done** (opt-in): `[restore] layout = "best-effort"` replays the saved split tree with `preselect` and an exact `splitratio`, for dwindle and master |
+| 2 | `restore --layout-only` | Phase 1 |
+| 3 | `.desktop` fallback, Flatpak, AppImage | Phase 1 |
+| 4 | Monitor hotplug and display profiles | **Partly**: monitors matched by identity, and `[monitors] missing = "remap"` at restore time (opt-in). Re-applying on hotplug is Phase 1 |
+| 5 | Skip the next restore; shutdown snapshot | Phase 1 |
+| 6 | Hooks and notifications | Phase 2 |
+| 7 | More terminals; terminals hosting sessions | **Partly**: a tmux recipe (`{pid}`, `keep_flags`; docs/PROVIDERS.md). WezTerm can be declared as a provider (`config --init` shows how) but is not built in. zellij and screen are Phase 2 |
+| 8 | ssh and mosh reconnect | Phase 2 |
+| 9 | Launch-command rewrite rules | Not yet. An external provider can take over a window class entirely |
+| 10 | Confirm before re-running | Phase 2 |
+| 11 | Snapshot history and recovery | **Partly**: the restored session is kept as `prerestore`, beside autosave rotation. The rest is Phase 3 |
+| 12 | Session picker | Phase 3 |
+| 13 | Waybar module | Phase 3 |
+| 14 | Session scoped to a workspace | Phase 3 (contexts) |
+| 15 | Track `xdg-session-management` | Phase 5. Hyprland 0.56.2 does not implement it |
+| 16 | Graceful close before shutdown | Phase 2 |
+| 17 | Background and tray apps | Not placed yet |
+| 18 | Encryption at rest | Phase 3 |
+| 19 | Reassemble window groups | **Done** (opt-in): `[restore] groups = "regroup"`, in saved tab order. Hyprland 0.56.2 ignores a window address in `window.move { into_group }` (measured), so members are launched into the focused group through `group:auto_group`. A by-address dispatcher is still worth proposing upstream (Phase 4) |
+
 ## What was reviewed
 
 **Hyprland**
