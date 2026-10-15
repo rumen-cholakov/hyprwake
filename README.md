@@ -330,12 +330,13 @@ table when you list any — and are read into the same providers.
 
 - **Window groups.** Membership is recorded, but the members come back as
   separate windows on the right workspace rather than regrouped, and the
-  restore report says which groups those were. Hyprland 0.56 has no way to
-  put a window into an existing group by address: `into_group` acts on the
-  focused window and takes a direction — which does not merge adjacent groups
-  in practice — and the `group` spawn rule joins whatever is focused, which a
-  silent restore never is. The data is captured so this becomes a small change
-  the day a targeted dispatcher exists.
+  restore report says which groups those were. Hyprland 0.56.2 can make a
+  window a group by address, but cannot put one *into* a group by address:
+  `window.move { into_group = <direction> }` accepts a window and ignores it,
+  acting on the focused window — which does join the group in that direction,
+  checked in a nested compositor. Regrouping therefore means focusing each
+  member in turn and steering it toward the group, which the layout rebuild
+  already does for splits; it is not done yet.
 - **Every tiling, every time.** The split tree is inferred from window
   geometry — Hyprland does not expose it — and rebuilt only where it was read
   cleanly, with `[restore] layout = "best-effort"`, which is not the default.
@@ -357,7 +358,7 @@ table when you list any — and are read into the same providers.
 ## Development
 
 ```sh
-cargo test        # 211 tests, no compositor required
+cargo test        # 354 tests, no compositor required
 cargo clippy --all-targets
 ```
 

@@ -55,9 +55,10 @@
   restore. `"strict"` rebuilds every recorded tree; `"off"` records nothing
   and waits for nothing. The default, `"reading-order"`, is the 0.1.x restore.
   Validated in a nested Hyprland: a four-window dwindle tree with three
-  uneven ratios and a five-window tree came back within 2px across eight
-  restores, a master layout exactly; a pseudotiled window scored 0.6 and its
-  workspace fell back quietly. `doctor` reports the mode and warns when
+  uneven ratios and a five-window tree came back within 2px across nine
+  restores, a tree on each of two monitors within 2px across three, a master
+  layout exactly; a pseudotiled window scored 0.6 and its workspace fell back
+  quietly. `doctor` reports the mode and warns when
   `dwindle:preserve_split` is off; `hyprwake diff` reports a workspace tiled
   differently from its snapshot.
 - **External providers.** `kind = "external"` hands capture and relaunch of
@@ -122,6 +123,17 @@ Nothing to do. `[terminals]`, `[apps]` and `[browsers]` keep working exactly
 as before — a test pins the argv they produce against 0.1.3 — and snapshots
 from 0.1.x load and restore unchanged. If you copied the codex resume rule
 from an earlier README, replace it with the current one (see Security).
+
+Every new behaviour that could move a window is off until you ask for it:
+monitor remapping (`[monitors] missing`), layout rebuilding
+(`[restore] layout`), external providers. One default does change what a
+restore does: `--missing-only` now pairs open windows with the saved entries
+they are (see Fixes), which launches the right window where it used to launch
+a duplicate.
+
+Snapshots are now schema v2 (`docs/SCHEMA.md`). A 0.1.x hyprwake reading one
+ignores what it does not know, so downgrading restores windows without the new
+information; there is nothing to convert either way.
 
 ### Fixes
 

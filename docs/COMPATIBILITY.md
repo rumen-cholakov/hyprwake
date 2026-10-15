@@ -15,3 +15,4 @@ to their evidence.
 |---|---|---|
 | Unit and CLI tests | x86_64, aarch64 | Capture, matching, restore planning, and package build logic work without a compositor |
 | Arch package validation | x86_64 | The PKGBUILD passes `makepkg --printsrcinfo` and `namcap` |
+| Nested Hyprland (agent-stack harness) | x86_64 | Real save and restore round trips in a disposable compositor inside the session, never the live one: workspace placement, title pairing, `--missing-only`, external providers, layout rebuilds (dwindle and master), and the multi-monitor release gate cases that need no hardware. Not a reboot, so not a row above. |
