@@ -12,6 +12,16 @@ use std::path::PathBuf;
 const MAX_LOG_BYTES: u64 = 512 * 1024;
 
 pub fn state_dir() -> PathBuf {
+    // Tests log too — every restore does — and must never write to the
+    // user's real log: a test run once filled it, hiding when a real watcher
+    // had stopped.
+    #[cfg(test)]
+    {
+        std::env::temp_dir()
+            .join(format!("hyprwake-test-{}", std::process::id()))
+            .join("hyprwake")
+    }
+    #[cfg(not(test))]
     dirs::state_dir()
         .unwrap_or_else(|| {
             dirs::home_dir()
@@ -61,5 +71,14 @@ mod tests {
     #[test]
     fn log_path_lives_in_state_dir() {
         assert_eq!(log_path().parent(), Some(state_dir().as_path()));
+    }
+
+    #[test]
+    fn tests_never_write_to_the_real_log() {
+        assert!(
+            state_dir().starts_with(std::env::temp_dir()),
+            "{}",
+            state_dir().display()
+        );
     }
 }

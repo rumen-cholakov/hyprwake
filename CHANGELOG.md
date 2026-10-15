@@ -152,6 +152,11 @@ from an earlier README, replace it with the current one (see Security).
   host as an `aquamarine` window (Hyprland's backend library); a watcher save
   while one was open would have relaunched a compositor inside the session at
   the next boot. `aquamarine` is now in the default `ignore_classes`.
+- **Tests no longer write to your hyprwake log or config.** Unit tests log to
+  a temporary directory, and the command-line tests run with their own config,
+  data and state directories; a test run used to fill
+  `~/.local/state/hyprwake/hyprwake.log`, hiding when the real watcher had
+  stopped.
 - **Running the test suite no longer stops your watcher.** A service test
   installed a unit into a temporary directory and then uninstalled it — which
   ran `systemctl --user disable --now hyprwake-watch.service` against the real

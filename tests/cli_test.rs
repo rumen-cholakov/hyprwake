@@ -3,7 +3,14 @@ use predicates::str::contains;
 
 fn hyprwake() -> Command {
     // Cargo points this at the freshly built binary for integration tests.
-    Command::new(env!("CARGO_BIN_EXE_hyprwake"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_hyprwake"));
+    // Never the user's own config, sessions or log: a test that resolved a
+    // session name or logged would otherwise do it in their home.
+    let scratch = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("cli-xdg");
+    cmd.env("XDG_CONFIG_HOME", scratch.join("config"))
+        .env("XDG_DATA_HOME", scratch.join("share"))
+        .env("XDG_STATE_HOME", scratch.join("state"));
+    cmd
 }
 
 #[test]
