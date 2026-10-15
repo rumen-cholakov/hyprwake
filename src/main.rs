@@ -389,6 +389,9 @@ fn cmd_restore(
                         report.guessed
                     );
                 }
+                if report.groups_regrouped > 0 {
+                    println!("  {} group(s) rebuilt as groups", report.groups_regrouped);
+                }
                 if report.groups_unrestored > 0 {
                     println!(
                         "  {} group(s) came back as separate windows",

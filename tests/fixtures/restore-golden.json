@@ -66,7 +66,7 @@
         "  hyprctl dispatch hl.dsp.workspace.move({ workspace = '1', monitor = 'eDP-1' })",
         "  hyprctl dispatch hl.dsp.workspace.move({ workspace = '2', monitor = 'eDP-1' })",
         "  hyprctl dispatch hl.dsp.workspace.move({ workspace = '3', monitor = 'eDP-1' })",
-        "group 0 (foot, code) restored as separate windows: Hyprland has no dispatcher to regroup them",
+        "group 0 (foot, code) restored as separate windows: set [restore] groups = \"regroup\" to rebuild window groups",
         "  hyprctl dispatch hl.dsp.focus({ monitor = 'eDP-1' })",
         "  hyprctl dispatch hl.dsp.focus({ workspace = '1' })",
         "  hyprctl dispatch hl.dsp.focus({ monitor = 'HDMI-A-1' })",
@@ -137,7 +137,7 @@
         "monitor HDMI-A-1 is not attached; leaving workspace 10",
         "  hyprctl dispatch hl.dsp.workspace.move({ workspace = '2', monitor = 'eDP-1' })",
         "  hyprctl dispatch hl.dsp.workspace.move({ workspace = '3', monitor = 'eDP-1' })",
-        "group 0 (foot, code) restored as separate windows: Hyprland has no dispatcher to regroup them",
+        "group 0 (foot, code) restored as separate windows: set [restore] groups = \"regroup\" to rebuild window groups",
         "  hyprctl dispatch hl.dsp.focus({ monitor = 'eDP-1' })",
         "  hyprctl dispatch hl.dsp.focus({ workspace = '1' })",
         "  hyprctl dispatch hl.dsp.focus({ monitor = 'HDMI-A-1' })",
@@ -173,7 +173,7 @@
         "monitor HDMI-A-1 is not attached; leaving workspace 10",
         "workspace 2 → eDP-1",
         "workspace 3 → eDP-1",
-        "group 0 (foot, code) restored as separate windows: Hyprland has no dispatcher to regroup them"
+        "group 0 (foot, code) restored as separate windows: set [restore] groups = \"regroup\" to rebuild window groups"
       ],
       "dispatched": [
         "hl.dsp.exec_cmd([[code]], { workspace = '1 silent' })",

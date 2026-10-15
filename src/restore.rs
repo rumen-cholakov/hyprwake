@@ -61,6 +61,8 @@ pub struct RestoreReport {
     pub monitors_placed: usize,
     /// Groups whose members were restored but not regrouped.
     pub groups_unrestored: usize,
+    /// Groups rebuilt as groups, every member in.
+    pub groups_regrouped: usize,
     /// Whether the view and focus were put back.
     pub focus_restored: bool,
     /// Windows the session wanted that were already open.
@@ -256,6 +258,13 @@ fn execute(
     let mut anchors: HashMap<usize, String> = HashMap::new();
     let mut begun: Vec<String> = Vec::new();
     let mut abandoned: BTreeMap<String, String> = BTreeMap::new();
+    // Group rebuilds: each group's first window, and groups given up on.
+    let mut group_heads: HashMap<u32, String> = HashMap::new();
+    // The member that joined last: Hyprland puts a joining window right after
+    // the focused tab, so focusing the last one keeps the saved order.
+    let mut group_last: HashMap<u32, String> = HashMap::new();
+    let mut groups_begun: Vec<(u32, Vec<String>)> = Vec::new();
+    let mut groups_failed: BTreeMap<u32, String> = BTreeMap::new();
 
     for step in &plan.steps {
         match step {
@@ -515,8 +524,87 @@ fn execute(
                     report.details.push(msg);
                 }
             }
-            Step::GroupUnrestored { group, classes } => {
-                let msg = Step::group_note(*group, classes);
+            Step::GroupBegin { group, classes, .. } => {
+                groups_begun.push((*group, classes.clone()));
+            }
+            Step::GroupSpawn {
+                group,
+                client,
+                class,
+                workspace,
+                first,
+                call,
+                ..
+            } => {
+                let failed = groups_failed.contains_key(group);
+                // Each later member must open while the group has focus.
+                if !*first && !failed {
+                    if let Err(why) =
+                        focus_group(hyprctl, config, &group_last[group], &group_heads[group])
+                    {
+                        groups_failed.insert(*group, why);
+                    }
+                }
+                let known: HashSet<String> = live_windows(hyprctl, config)
+                    .map(|ws| ws.into_iter().map(|w| w.address).collect())
+                    .unwrap_or_default();
+                match hyprctl.dispatch(call) {
+                    Ok(()) => {
+                        report.spawned += 1;
+                        *on_workspace.entry(workspace.clone()).or_default() += 1;
+                        last_tiled = Some(workspace.clone());
+                        if opts.verbose {
+                            report.details.push(format!("spawn {class} → {workspace}"));
+                        }
+                    }
+                    Err(e) => {
+                        report.failed += 1;
+                        report.details.push(format!("FAIL spawn {class}: {e}"));
+                        groups_failed
+                            .entry(*group)
+                            .or_insert_with(|| format!("launching {class} failed"));
+                        continue;
+                    }
+                }
+                if groups_failed.contains_key(group) {
+                    continue;
+                }
+                let Some(address) = wait_for_new(hyprctl, config, workspace, &known) else {
+                    groups_failed.insert(*group, format!("{class} did not appear in time"));
+                    continue;
+                };
+                anchors.insert(*client, address.clone());
+                group_last.insert(*group, address.clone());
+                if *first {
+                    let call = format!(
+                        "hl.dsp.group.toggle({{ window = {} }})",
+                        lua_str(&format!("address:{address}"))
+                    );
+                    match hyprctl.dispatch(&call) {
+                        Ok(()) => {
+                            group_heads.insert(*group, address);
+                        }
+                        Err(e) => {
+                            groups_failed
+                                .insert(*group, format!("making {class} a group failed: {e}"));
+                        }
+                    }
+                } else if !in_group(hyprctl, config, &address, &group_heads[group]) {
+                    groups_failed.insert(
+                        *group,
+                        format!(
+                            "{class} opened beside the group, not in it — focus may have moved \
+                             to a window that mapped late, or group:auto_group is off"
+                        ),
+                    );
+                }
+            }
+            Step::GroupUnrestored {
+                group,
+                classes,
+                reason,
+            } => {
+                let msg = Step::group_note(*group, classes, reason);
                 log(msg.clone());
                 if opts.verbose {
                     report.details.push(msg);
@@ -530,6 +618,27 @@ fn execute(
                         lua_str(&format!("address:{address}"))
                     );
                     focus(hyprctl, &call, &mut report);
+                }
+            }
+        }
+    }
+
+    for (group, classes) in &groups_begun {
+        match groups_failed.get(group) {
+            Some(why) => {
+                report.groups_unrestored += 1;
+                let msg =
+                    Step::group_note(*group, classes, &format!("rebuilding it failed: {why}"));
+                log(msg.clone());
+                report.details.push(msg);
+            }
+            None => {
+                report.groups_regrouped += 1;
+                log(format!("group {group} rebuilt: {}", classes.join(", ")));
+                if opts.verbose {
+                    report
+                        .details
+                        .push(format!("group {group} rebuilt: {}", classes.join(", ")));
                 }
             }
         }
@@ -555,6 +664,42 @@ fn execute(
         }
     }
     report
+}
+
+/// Focus the group at its member `tab`, and check the focus held: a window
+/// that maps late can take it, and a member launched then would open beside
+/// the group instead of in it. `head` is the group's first window.
+fn focus_group(
+    hyprctl: &dyn HyprctlClient,
+    config: &Config,
+    tab: &str,
+    head: &str,
+) -> Result<(), String> {
+    let call = format!(
+        "hl.dsp.focus({{ window = {} }})",
+        lua_str(&format!("address:{tab}"))
+    );
+    for _ in 0..2 {
+        hyprctl
+            .dispatch(&call)
+            .map_err(|e| format!("focusing the group failed: {e}"))?;
+        let focused = live_windows(hyprctl, config)
+            .ok()
+            .and_then(|ws| ws.into_iter().find(|w| w.focus_history_id == 0));
+        if focused.is_some_and(|w| w.address == head || w.grouped.iter().any(|a| a == head)) {
+            return Ok(());
+        }
+    }
+    Err("focus would not stay on the group; another window kept taking it".into())
+}
+
+/// Whether the window at `address` is in the group whose first window is
+/// `head`.
+fn in_group(hyprctl: &dyn HyprctlClient, config: &Config, address: &str, head: &str) -> bool {
+    live_windows(hyprctl, config).is_ok_and(|ws| {
+        ws.iter()
+            .any(|w| w.address == address && w.grouped.iter().any(|a| a == head))
+    })
 }
 
 /// Give up rebuilding a workspace's tree, keeping the first reason.
@@ -911,6 +1056,7 @@ mod tests {
             fullscreen: 0,
             focus_history_id: 0,
             group: None,
+            group_position: None,
             identity: Default::default(),
             launch: LaunchInfo {
                 argv: vec![class.to_string()],
@@ -1691,6 +1837,224 @@ profile_workspaces = { "Profile 1" = "3" }
             .details
             .iter()
             .any(|d| d.contains("hl.dsp.layout('preselect r')")));
+    }
+
+    // ── window groups ──
+
+    /// A compositor with groups: launches map on the next poll on the
+    /// workspace their rule names; `group.toggle` makes a window a group;
+    /// focus moves to a window by address; and, as `group:auto_group` does,
+    /// a window opening while a group has focus joins it — unless
+    /// `auto_group` is off.
+    /// One window in the [`Grouper`]: address, class, workspace, the group
+    /// it is in, and the poll on which it maps.
+    type FakeWindow = (String, String, String, Vec<String>, usize);
+
+    struct Grouper {
+        windows: RefCell<Vec<FakeWindow>>,
+        focused: RefCell<Option<String>>,
+        polls: RefCell<usize>,
+        auto_group: bool,
+    }
+
+    impl Grouper {
+        fn new(auto_group: bool) -> Self {
+            Grouper {
+                windows: RefCell::new(vec![]),
+                focused: RefCell::new(None),
+                polls: RefCell::new(0),
+                auto_group,
+            }
+        }
+        fn groups(&self) -> Vec<Vec<String>> {
+            let mut out: Vec<Vec<String>> = Vec::new();
+            for (_, _, _, grouped, _) in self.windows.borrow().iter() {
+                if grouped.len() > 1 && !out.contains(grouped) {
+                    out.push(grouped.clone());
+                }
+            }
+            out
+        }
+        fn class_of(&self, address: &str) -> String {
+            self.windows
+                .borrow()
+                .iter()
+                .find(|w| w.0 == address)
+                .map(|w| w.1.clone())
+                .unwrap()
+        }
+    }
+
+    impl HyprctlClient for Grouper {
+        fn get_clients(&self) -> Result<Vec<HyprClient>, crate::hyprctl::HyprctlError> {
+            *self.polls.borrow_mut() += 1;
+            let now = *self.polls.borrow();
+            let focused = self.focused.borrow().clone();
+            Ok(self
+                .windows
+                .borrow()
+                .iter()
+                .filter(|w| now >= w.4)
+                .map(|(addr, class, ws, grouped, _)| {
+                    let mut c = live(class, (ws.parse().unwrap(), ws), addr);
+                    c.grouped = grouped.clone();
+                    c.focus_history_id = if focused.as_deref() == Some(addr) {
+                        0
+                    } else {
+                        1
+                    };
+                    c
+                })
+                .collect())
+        }
+        fn get_monitors(
+            &self,
+        ) -> Result<Vec<crate::hyprctl::HyprMonitor>, crate::hyprctl::HyprctlError> {
+            Ok(vec![])
+        }
+        fn dispatch(&self, call: &str) -> Result<(), crate::hyprctl::HyprctlError> {
+            let address_in = |call: &str| {
+                call.split("address:")
+                    .nth(1)
+                    .map(|s| s.split('\'').next().unwrap().to_string())
+            };
+            if let Some(rest) = call.strip_prefix("hl.dsp.exec_cmd([[") {
+                let class = rest.split("]]").next().unwrap().to_string();
+                let ws = call
+                    .split("workspace = '")
+                    .nth(1)
+                    .and_then(|s| s.split(' ').next())
+                    .unwrap()
+                    .to_string();
+                let mut windows = self.windows.borrow_mut();
+                let address = format!("0x{}", windows.len());
+                // auto_group: join the focused group if it is on this workspace.
+                let host = self.focused.borrow().clone().and_then(|f| {
+                    windows
+                        .iter()
+                        .find(|w| w.0 == f && w.2 == ws && !w.3.is_empty())
+                        .map(|w| w.3.clone())
+                });
+                let grouped = match host.filter(|_| self.auto_group) {
+                    Some(mut members) => {
+                        // Hyprland inserts after the focused tab.
+                        let focused = self.focused.borrow().clone().unwrap();
+                        let at = members.iter().position(|m| *m == focused).unwrap() + 1;
+                        members.insert(at, address.clone());
+                        for w in windows.iter_mut().filter(|w| members.contains(&w.0)) {
+                            w.3 = members.clone();
+                        }
+                        members
+                    }
+                    None => vec![],
+                };
+                let maps_at = *self.polls.borrow() + 1;
+                windows.push((address.clone(), class, ws, grouped, maps_at));
+                *self.focused.borrow_mut() = Some(address);
+            } else if call.starts_with("hl.dsp.group.toggle(") {
+                let a = address_in(call).unwrap();
+                for w in self.windows.borrow_mut().iter_mut().filter(|w| w.0 == a) {
+                    w.3 = vec![a.clone()];
+                }
+            } else if call.starts_with("hl.dsp.focus({ window") {
+                *self.focused.borrow_mut() = address_in(call);
+            }
+            Ok(())
+        }
+        fn get_hyprland_version(&self) -> Result<String, crate::hyprctl::HyprctlError> {
+            Ok("0.56.2".into())
+        }
+    }
+
+    /// Three terminals tabbed in one group on workspace 4, saved in the
+    /// group-bar order b, c, a.
+    fn grouped_session() -> Session {
+        let mut members = vec![
+            saved("a", (4, "4")),
+            saved("b", (4, "4")),
+            saved("c", (4, "4")),
+        ];
+        for (client, position) in members.iter_mut().zip([2, 0, 1]) {
+            client.group = Some(0);
+            client.group_position = Some(position);
+        }
+        session_of(members)
+    }
+
+    fn regroup_config() -> Config {
+        let mut c = fast_config();
+        c.general.sweep_timeout_secs = 1;
+        c.general.tiled_map_timeout_ms = 300;
+        c.restore.groups = crate::config::GroupMode::Regroup;
+        c
+    }
+
+    #[test]
+    fn a_group_is_rebuilt_in_its_saved_order() {
+        let hypr = Grouper::new(true);
+        let report = restore_session(
+            &grouped_session(),
+            &hypr,
+            &regroup_config(),
+            &RestoreOptions::default(),
+        )
+        .unwrap();
+        let groups = hypr.groups();
+        assert_eq!(groups.len(), 1, "{groups:?}");
+        let order: Vec<String> = groups[0].iter().map(|a| hypr.class_of(a)).collect();
+        assert_eq!(order, vec!["b", "c", "a"]);
+        assert_eq!(report.groups_regrouped, 1);
+        assert_eq!(report.groups_unrestored, 0);
+        assert_eq!(report.unmatched, 0, "group members are paired as they map");
+    }
+
+    #[test]
+    fn a_member_that_opens_beside_the_group_is_reported_not_forced() {
+        let hypr = Grouper::new(false);
+        let report = restore_session(
+            &grouped_session(),
+            &hypr,
+            &regroup_config(),
+            &RestoreOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(report.spawned, 3, "every member is still launched");
+        assert_eq!(report.groups_regrouped, 0);
+        assert_eq!(report.groups_unrestored, 1);
+        assert!(
+            report
+                .details
+                .iter()
+                .any(|d| d.contains("opened beside the group") && d.contains("auto_group")),
+            "{:?}",
+            report.details
+        );
+    }
+
+    #[test]
+    fn groups_stay_separate_unless_asked_and_say_how_to_ask() {
+        let hypr = Grouper::new(true);
+        let opts = RestoreOptions {
+            verbose: true,
+            ..Default::default()
+        };
+        let report = restore_session(
+            &grouped_session(),
+            &hypr,
+            &layout_config(crate::config::LayoutMode::ReadingOrder),
+            &opts,
+        )
+        .unwrap();
+        assert!(hypr.groups().is_empty());
+        assert_eq!(report.groups_unrestored, 1);
+        assert!(
+            report
+                .details
+                .iter()
+                .any(|d| d.contains("groups = \"regroup\"")),
+            "{:?}",
+            report.details
+        );
     }
 
     // ── external providers ──

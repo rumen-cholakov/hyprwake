@@ -43,6 +43,21 @@ pub struct RestoreConfig {
     /// confidence, which capture records alongside the tree.
     #[serde(default = "default_layout_min_confidence")]
     pub layout_min_confidence: f32,
+    #[serde(default)]
+    pub groups: GroupMode,
+}
+
+/// What a restore does with windows that were tabbed together in a group.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GroupMode {
+    /// Members come back as separate windows on the group's workspace, and
+    /// the report names the group. What 0.1.x did.
+    #[default]
+    Separate,
+    /// Rebuild each group: launch its first member, make it a group, and
+    /// launch the others into it in their saved order, checking each joined.
+    Regroup,
 }
 
 impl Default for RestoreConfig {
@@ -50,6 +65,7 @@ impl Default for RestoreConfig {
         RestoreConfig {
             layout: LayoutMode::default(),
             layout_min_confidence: default_layout_min_confidence(),
+            groups: GroupMode::default(),
         }
     }
 }

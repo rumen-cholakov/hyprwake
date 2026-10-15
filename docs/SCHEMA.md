@@ -90,7 +90,8 @@ Tagged by `node`:
 | `floating`, `pinned` | boolean | v1 | |
 | `fullscreen` | integer | v1 | Hyprland's fullscreen state: bit 1 fullscreen, bit 0 maximised. |
 | `focus_history_id` | integer | v1 | 0 is the window that had focus. |
-| `group` | integer \| null | v1 | Windows sharing a value were one group. Recorded; members restore as separate windows. |
+| `group` | integer \| null | v1 | Windows sharing a value were one group. Rebuilt as a group with `[restore] groups = "regroup"`, separate windows otherwise. |
+| `group_position` | integer \| null | v2 | Its tab in that group, 0 first, as the group bar ordered them. |
 | `identity` | Identity | v2 | Diagnostics; see below. |
 | `launch` | Launch | v1 | How to bring it back. |
 
@@ -135,6 +136,6 @@ between sessions.
 
 The v2 tables without the fields marked v2. No `schema_version`, `created_by`
 or `workspaces`; monitors without `make`, `model`, `serial`, `scale` and
-`position`; clients without `identity`; `launch` without `provider` and
+`position`; clients without `identity` and `group_position`; `launch` without `provider` and
 `provider_state`. `tests/fixtures/session-v1.json` is a real 0.1.3 snapshot,
 kept so that this keeps loading.

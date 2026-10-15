@@ -31,6 +31,7 @@ hyprwake doctor               # what would happen if you did
 | Floating windows | pixel-exact position and size |
 | Tiling | opt-in: each workspace's dwindle or master split tree, read back from window geometry and rebuilt split by split when it was read cleanly; reading order otherwise |
 | Window state | pinned, fullscreen, maximized |
+| Window groups | opt-in: tabbed groups rebuilt as groups, tabs in their saved order; separate windows otherwise |
 | Browser profiles | one window per profile, each on its own workspace — Chromium family via `Local State`, Firefox family via `profiles.ini` |
 | Focus | never stolen — everything is placed silently, in the background; a layout rebuild focuses windows to split them, and hands focus back where it was saved |
 
@@ -317,6 +318,20 @@ by its own program rather than launched, or when it is a special workspace.
 `hyprwake diff` reports a workspace whose windows are all open but tiled
 differently from the snapshot.
 
+Window groups come back as separate windows unless you ask for them:
+
+```toml
+[restore]
+groups = "regroup"           # rebuild each group, tabs in their saved order
+```
+
+A group is rebuilt by launching its first window, making it a group, and
+launching the others while the group has focus, so Hyprland's
+`group:auto_group` (on by default) takes each one in; every member is checked
+after it opens. A group whose windows a program reopens itself — a browser's
+second window — or that spans workspaces comes back as separate windows, and
+the report says why.
+
 For an application none of the built-in kinds fits, `kind = "external"`
 hands capture and relaunch to a helper program you write, speaking JSON;
 hyprwake runs it only if nobody but you can change it, and checks what it
@@ -328,15 +343,14 @@ table when you list any — and are read into the same providers.
 
 ## What it cannot do
 
-- **Window groups.** Membership is recorded, but the members come back as
-  separate windows on the right workspace rather than regrouped, and the
-  restore report says which groups those were. Hyprland 0.56.2 can make a
-  window a group by address, but cannot put one *into* a group by address:
-  `window.move { into_group = <direction> }` accepts a window and ignores it,
-  acting on the focused window — which does join the group in that direction,
-  checked in a nested compositor. Regrouping therefore means focusing each
-  member in turn and steering it toward the group, which the layout rebuild
-  already does for splits; it is not done yet.
+- **Groups of windows hyprwake does not launch.** `groups = "regroup"`
+  rebuilds a group by launching its members into it, one at a time, while it
+  has focus — Hyprland 0.56.2 cannot put an existing window into a group by
+  address (`window.move { into_group }` ignores the window it is given and
+  moves the focused one). Members a program reopens on its own arrive when
+  they arrive, so their group comes back as separate windows. Which tab of a
+  group was showing is not recorded; the restore ends on the window that had
+  focus.
 - **Every tiling, every time.** The split tree is inferred from window
   geometry — Hyprland does not expose it — and rebuilt only where it was read
   cleanly, with `[restore] layout = "best-effort"`, which is not the default.

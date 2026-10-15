@@ -237,6 +237,7 @@ mod tests {
             fullscreen: 0,
             focus_history_id: -1,
             group: None,
+            group_position: None,
             identity: Default::default(),
             launch: LaunchInfo {
                 argv: vec![class.to_string()],

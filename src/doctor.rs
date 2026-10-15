@@ -135,6 +135,32 @@ fn layout_check(config: &Config, opts: &crate::layout::LayoutOptions) -> Check {
     Check::new("layout", Status::Ok, detail)
 }
 
+/// Rebuilding groups relies on `group:auto_group`: a window opening while a
+/// group has focus joins it. Only worth a line when regrouping is on.
+fn groups_check(config: &Config, hyprctl: &dyn HyprctlClient) -> Option<Check> {
+    if config.restore.groups != crate::config::GroupMode::Regroup {
+        return None;
+    }
+    let auto_group = hyprctl
+        .get_option("group.auto_group")
+        .and_then(|v| {
+            v.get("bool")
+                .and_then(|b| b.as_bool())
+                .or_else(|| v.get("int").and_then(|i| i.as_i64()).map(|i| i != 0))
+        })
+        .unwrap_or(true);
+    Some(if auto_group {
+        Check::new("groups", Status::Ok, "window groups are rebuilt on restore")
+    } else {
+        Check::new(
+            "groups",
+            Status::Warn,
+            "group:auto_group is off, so no window can be launched into a group; groups \
+             will come back as separate windows",
+        )
+    })
+}
+
 /// What the snapshot on disk says it is, and what wrote it.
 ///
 /// An older snapshot is fine — it is migrated on load — so this reports
@@ -236,11 +262,14 @@ pub fn run(
         ));
     }
 
-    // ── layout replay ──
+    // ── layout replay and groups ──
     checks.push(layout_check(
         config,
         &crate::layout::LayoutOptions::read(hyprctl),
     ));
+    if let Some(check) = groups_check(config, hyprctl) {
+        checks.push(check);
+    }
 
     // ── external providers: a helper that will not be run ──
     let mut refused = Vec::new();
@@ -484,6 +513,23 @@ mod tests {
         assert!(layout_check(&config, &scrolling)
             .detail
             .contains("cannot infer"));
+    }
+
+    #[test]
+    fn regrouping_without_auto_group_is_a_warning() {
+        let mut config: Config = toml::from_str("").unwrap();
+        let mut hypr = crate::hyprctl::mock::MockHyprctl::default();
+        assert!(
+            groups_check(&config, &hypr).is_none(),
+            "silent unless regrouping"
+        );
+        config.restore.groups = crate::config::GroupMode::Regroup;
+        assert_eq!(groups_check(&config, &hypr).unwrap().status, Status::Ok);
+        hypr.options.insert(
+            "group.auto_group".into(),
+            serde_json::json!({"bool": false}),
+        );
+        assert_eq!(groups_check(&config, &hypr).unwrap().status, Status::Warn);
     }
 
     #[test]

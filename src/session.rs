@@ -174,9 +174,13 @@ pub struct SessionClient {
     pub focus_history_id: i32,
     /// Index of the window group this belonged to, shared by its members.
     ///
-    /// Recorded but not reassembled on restore: see `restore::grouped_sets`.
+    /// Reassembled on restore with `[restore] groups = "regroup"`; see
+    /// `plan::group_rebuild`.
     #[serde(default)]
     pub group: Option<u32>,
+    /// Its place in that group, 0 first, as the group bar orders them.
+    #[serde(default)]
+    pub group_position: Option<u32>,
     /// What else is known about the window, for diagnosis.
     ///
     /// Every field is optional by design: a `None` is better than a wrong
@@ -473,6 +477,7 @@ mod tests {
             fullscreen: 0,
             focus_history_id: 0,
             group: None,
+            group_position: None,
             identity: Identity::default(),
             launch: LaunchInfo {
                 argv: vec![class.to_string()],

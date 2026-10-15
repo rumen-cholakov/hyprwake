@@ -39,6 +39,17 @@
   wrong kind (`restore_last_session` on Firefox, a typo in `strip_args`) is a
   load error with its line number instead of a silent no-op. See
   [docs/PROVIDERS.md](docs/PROVIDERS.md).
+- **Window groups, optionally rebuilt.** With `[restore] groups = "regroup"`,
+  each tabbed group comes back as a group, tabs in their saved order: its first
+  window is launched and made a group, then each other member is launched
+  while the group has focus, so Hyprland's `group:auto_group` takes it in.
+  Focus is checked before each launch — a window mapping late can take it —
+  and membership after it; a member that opens beside the group is left there
+  and the report says why. Groups whose members a program reopens itself, or
+  that span workspaces, come back as separate windows, as before, which is
+  also the default. Snapshots record each window's place in its group.
+  Validated in a nested Hyprland: a three-tab and a four-tab group, saved in
+  scrambled orders, came back as one group in that order five of five times.
 - **Tiling layouts, recorded and optionally rebuilt.** Each save now records,
   per workspace, the split tree its tiled windows were in — read back from
   their geometry, since Hyprland does not expose it — with the layout kind

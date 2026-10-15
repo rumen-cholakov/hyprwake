@@ -93,6 +93,11 @@ pub fn capture_session(
             fullscreen: raw.fullscreen,
             focus_history_id: raw.focus_history_id,
             group: group_ids.get(&raw.address).copied(),
+            group_position: group_ids
+                .contains_key(&raw.address)
+                .then(|| raw.grouped.iter().position(|a| a == &raw.address))
+                .flatten()
+                .map(|p| p as u32),
             // Recorded so a support report can say what each window was;
             // matching does not use them. On real windows they are the same
             // for every window of a class, so they could not separate

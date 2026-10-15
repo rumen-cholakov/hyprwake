@@ -13,8 +13,8 @@
 
 use crate::browsers::profile_argv;
 use crate::config::Config;
-use crate::config::LayoutMode;
 use crate::config::MissingMonitor;
+use crate::config::{GroupMode, LayoutMode};
 use crate::hyprctl::{HyprClient, HyprMonitor};
 use crate::layout::{self, ReplayOp};
 use crate::lua::{lua_long_str, lua_str};
@@ -116,7 +116,30 @@ pub enum Step {
     /// The monitor a workspace was on is not attached; leave it be.
     MonitorMissing { workspace: String, monitor: String },
     /// Members of a window group come back as separate windows.
-    GroupUnrestored { group: u32, classes: Vec<String> },
+    GroupUnrestored {
+        group: u32,
+        classes: Vec<String>,
+        reason: String,
+    },
+    /// A window group rebuilt as one: its members are launched in their
+    /// saved order, the first made a group and the rest launched into it.
+    GroupBegin {
+        group: u32,
+        workspace: String,
+        classes: Vec<String>,
+    },
+    /// Launch one member of a group being rebuilt and wait for it to map.
+    /// The first is made a group; each later one is launched while the
+    /// group has focus, so the compositor's `group:auto_group` takes it in.
+    GroupSpawn {
+        group: u32,
+        client: usize,
+        class: String,
+        workspace: String,
+        first: bool,
+        command: String,
+        call: String,
+    },
     /// Bring a monitor or a workspace forward.
     Focus { call: String },
     /// Focus whichever window the saved focused client turned into.
@@ -255,10 +278,61 @@ pub fn plan(
         }
     }
 
+    // Window groups to rebuild, and why the others are not.
+    let mut regroup: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+    let mut unrestored: Vec<(u32, Vec<usize>, String)> = Vec::new();
+    for (group, members) in grouped_sets(session) {
+        match group_rebuild(session, &members, &open, &rebuilt, config) {
+            Ok(ordered) => {
+                regroup.insert(group, ordered);
+            }
+            Err(reason) => unrestored.push((group, members, reason)),
+        }
+    }
+    let group_of: HashMap<usize, u32> = regroup
+        .iter()
+        .flat_map(|(g, members)| members.iter().map(move |m| (*m, *g)))
+        .collect();
+    let mut groups_emitted: HashSet<u32> = HashSet::new();
+
     let mut previous_tiled: Option<String> = None;
     for index in order {
         let client: &SessionClient = &session.clients[index];
         if rebuilt.contains(&index) {
+            continue;
+        }
+        if let Some(&group) = group_of.get(&index) {
+            // The whole group goes where its first member falls in reading
+            // order; the other members were launched with it.
+            if groups_emitted.insert(group) {
+                let members = &regroup[&group];
+                let workspace = client.workspace.selector();
+                steps.push(Step::GroupBegin {
+                    group,
+                    workspace: workspace.clone(),
+                    classes: members
+                        .iter()
+                        .map(|i| session.clients[*i].class.clone())
+                        .collect(),
+                });
+                for (n, &member) in members.iter().enumerate() {
+                    let c = &session.clients[member];
+                    let command = launch_command(&c.launch.argv, use_uwsm);
+                    let placed = with_geometry(c, geometry.get(&member));
+                    steps.push(Step::GroupSpawn {
+                        group,
+                        client: member,
+                        class: c.class.clone(),
+                        workspace: workspace.clone(),
+                        first: n == 0,
+                        call: exec_call(&command, &c.workspace, &placed),
+                        command,
+                    });
+                }
+                if !client.floating {
+                    previous_tiled = Some(workspace);
+                }
+            }
             continue;
         }
         if let Some(address) = open.get(&index) {
@@ -347,14 +421,14 @@ pub fn plan(
         }
     }
 
-    let groups = grouped_sets(session);
-    for (group, members) in &groups {
+    for (group, members, reason) in &unrestored {
         steps.push(Step::GroupUnrestored {
             group: *group,
             classes: members
                 .iter()
                 .map(|i| session.clients[*i].class.clone())
                 .collect(),
+            reason: reason.clone(),
         });
     }
 
@@ -399,7 +473,10 @@ pub fn plan(
         .filter(|s| {
             matches!(
                 s,
-                Step::Spawn { .. } | Step::SpawnProfile { .. } | Step::LayoutSpawn { .. }
+                Step::Spawn { .. }
+                    | Step::SpawnProfile { .. }
+                    | Step::LayoutSpawn { .. }
+                    | Step::GroupSpawn { .. }
             )
         })
         .count();
@@ -408,8 +485,47 @@ pub fn plan(
         geometry,
         launches,
         already_open,
-        groups_unrestored: groups.len(),
+        groups_unrestored: unrestored.len(),
     }
+}
+
+/// Whether a window group is rebuilt: its members in the order to launch
+/// them, or why it comes back as separate windows.
+fn group_rebuild(
+    session: &Session,
+    members: &[usize],
+    open: &HashMap<usize, &str>,
+    rebuilt: &HashSet<usize>,
+    config: &Config,
+) -> Result<Vec<usize>, String> {
+    if config.restore.groups != GroupMode::Regroup {
+        return Err("set [restore] groups = \"regroup\" to rebuild window groups".into());
+    }
+    let first = &session.clients[members[0]];
+    if members
+        .iter()
+        .any(|&i| !session.clients[i].workspace.same(&first.workspace))
+    {
+        return Err("its members were saved on different workspaces".into());
+    }
+    if first.workspace.is_special() {
+        return Err("it was on a special workspace, which focusing would toggle".into());
+    }
+    if let Some(&i) = members.iter().find(|&&i| !session.clients[i].launch.spawn) {
+        return Err(format!(
+            "{} is reopened by its own program, not launched, so it cannot be put in the group",
+            session.clients[i].class
+        ));
+    }
+    if members.iter().any(|i| open.contains_key(i)) {
+        return Err("some of its windows were already open".into());
+    }
+    if members.iter().any(|i| rebuilt.contains(i)) {
+        return Err("its windows are part of a layout rebuild".into());
+    }
+    let mut ordered = members.to_vec();
+    ordered.sort_by_key(|&i| (session.clients[i].group_position.unwrap_or(u32::MAX), i));
+    Ok(ordered)
 }
 
 /// Whether a workspace's saved tree is rebuilt: `Ok(Some)` with the tree and
@@ -523,10 +639,9 @@ impl Step {
         format!("monitor {monitor} is not attached; leaving workspace {workspace}")
     }
 
-    pub fn group_note(group: u32, classes: &[String]) -> String {
+    pub fn group_note(group: u32, classes: &[String], reason: &str) -> String {
         format!(
-            "group {group} ({}) restored as separate windows: Hyprland has no \
-             dispatcher to regroup them",
+            "group {group} ({}) restored as separate windows: {reason}",
             classes.join(", ")
         )
     }
@@ -633,8 +748,41 @@ pub fn render(plan: &RestorePlan, opts: &RestoreOptions) -> RestoreReport {
                     out.push(Step::monitor_missing_note(workspace, monitor));
                 }
             }
-            Step::GroupUnrestored { group, classes } => {
-                out.push(Step::group_note(*group, classes));
+            Step::GroupUnrestored {
+                group,
+                classes,
+                reason,
+            } => {
+                out.push(Step::group_note(*group, classes, reason));
+            }
+            Step::GroupBegin {
+                group,
+                workspace,
+                classes,
+            } => out.push(format!(
+                "[group] group {group} on workspace {workspace} rebuilt from {} windows: {}",
+                classes.len(),
+                classes.join(", ")
+            )),
+            Step::GroupSpawn {
+                class,
+                command,
+                call,
+                first,
+                ..
+            } => {
+                if !*first {
+                    out.push(
+                        "  hyprctl dispatch hl.dsp.focus({ window = <the group> })".to_string(),
+                    );
+                }
+                out.push(format!("[dry-run] {class} → {command}"));
+                out.push(format!("  hyprctl dispatch {call}"));
+                if *first {
+                    out.push(format!(
+                        "  hyprctl dispatch hl.dsp.group.toggle({{ window = <the {class} window> }})"
+                    ));
+                }
             }
             Step::Sweep { .. } | Step::FocusWindow { .. } => {}
         }
@@ -664,6 +812,7 @@ mod tests {
             fullscreen: 0,
             focus_history_id: -1,
             group: None,
+            group_position: None,
             identity: Default::default(),
             launch: LaunchInfo {
                 argv: vec![class.to_string()],

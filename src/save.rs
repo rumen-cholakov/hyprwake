@@ -135,6 +135,7 @@ mod tests {
                     fullscreen: 0,
                     focus_history_id: 0,
                     group: None,
+                    group_position: None,
                     identity: Default::default(),
                     launch: LaunchInfo {
                         argv: vec![format!("app{i}")],
