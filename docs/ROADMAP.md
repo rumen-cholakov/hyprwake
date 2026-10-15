@@ -14,8 +14,7 @@ update. It can be inspected and changed, and it moves between machines.
 By 1.x, hyprwake should be:
 
 1. **The session layer for tiling Wayland compositors.** One core, with
-   Hyprland first. Other compositors come later, and only if Phase 4's gate
-   is met.
+   backends for Hyprland first, then niri and sway.
 2. **The reference session store for `xdg-session-management`.** Apps that
    speak the protocol restore their own window state. hyprwake keeps argv
    relaunch for everything else, and owns the policy: when to restore, what,
@@ -32,11 +31,15 @@ These principles do not change at any stage:
 - private by default;
 - every automatic action can be dry-run, explained and undone.
 
-**Hyprland only, until Phase 4.** Depth on one compositor is what makes
-restores exact. A second backend is worth considering only once restores are
-dependable on Hyprland itself, which is what Phase 1's exit criteria measure.
-Until then, nothing that would serve another compositor is allowed to cost
-Hyprland anything.
+**One core, several compositors; Hyprland first.** The long-run direction is
+a compositor-neutral core with one backend per compositor (Phase 4).
+Hyprland stays the first and reference backend. Depth on it is what makes
+restores exact, and a second backend should port something already
+dependable, so the backends come after Phase 1's exit criteria hold on
+Hyprland. The core is kept neutral from now on, though (see *Keep the core
+compositor-neutral* below), so that the split is a refactor rather than a
+rewrite. Nothing done for a future backend may cost Hyprland exactness in
+the meantime.
 
 ## Where 0.2.0 stands
 
@@ -167,7 +170,11 @@ setup, verified by machines and not only by one desktop.*
 
 - **A stable schema.** v2 is versioned and migrated already. Declare it
   stable and publish a JSON Schema, so other tools can read and write
-  sessions.
+  sessions. Before it is frozen, compositor-specific placement (Hyprland's
+  split trees, groups, special workspaces) moves into a per-compositor
+  section beside the neutral record of windows, workspaces and monitors. A
+  session from one compositor can then be opened on another by dropping that
+  section.
 - **Contexts.**
   - Sessions scoped to a set of workspaces.
   - `hyprwake open|close|switch <context>`.
@@ -201,9 +208,10 @@ setup, verified by machines and not only by one desktop.*
 *Goal: one core, several compositors, and the capabilities that IPC alone
 cannot give.*
 
-**Gate:** this phase starts only when Phase 1's exit criteria hold on
-Hyprland, and only if there is demand. Otherwise Hyprland-only continues,
-and only the upstream work below goes ahead.
+**When:** the backends start once Phase 1's exit criteria hold on Hyprland,
+so that what gets ported is already dependable. The upstream work below can
+start earlier. Hyprland remains the reference backend: a feature lands there
+first and is ported, never designed for the lowest common denominator.
 
 - **Upstream before plugins.** Propose the missing Hyprland dispatchers:
   - add a window to a group by address;
@@ -213,8 +221,8 @@ and only the upstream work below goes ahead.
   of these removes a "What it cannot do" item from the README.
 - **Split the crate.**
   - `hyprwake-core`: schema, adapters, matching, safety rails, history.
-  - One `Compositor` backend per compositor. The current `Hyprctl` trait is
-    already that seam.
+  - One `Compositor` backend per compositor. The current `HyprctlClient`
+    trait is already that seam.
 - **Backends.** niri (its IPC exposes columns, which suits it well) and
   sway / i3 (the layout tree is exposed, so exact tiling restore comes for
   free there). River or others only if users ask.
@@ -280,6 +288,19 @@ is for `doctor` to report whether the compositor offers it.
 - **Keep up with Hyprland.** Track its IPC and config changes: the Lua
   config manager arrived in 0.55, and 0.56.2 is the validation machine's.
   Test against Hyprland git in a non-blocking CI job.
+- **Keep the core compositor-neutral.** This applies from now on, not only in
+  Phase 4, so that the crate split is a refactor:
+  - Compositor access goes through one trait: `HyprctlClient` today,
+    `Compositor` after the split. The Lua dispatch strings (`hl.dsp.*`) are
+    still built in `plan.rs`, `restore.rs` and `layout.rs`. They move behind
+    the trait as those modules are touched, and new code adds none outside
+    it.
+  - Matching, providers, safety rails and history work on neutral types
+    (windows, workspaces, monitors), never on Hyprland's JSON.
+  - Hyprland-only capabilities (dwindle and master trees, groups, special
+    workspaces) are optional features a backend declares. On a compositor
+    without one, the restore degrades and the report says why, the way an
+    unconfident layout already falls back to reading order.
 - **Safety and privacy.** Every new kind of state has to say:
   - where it is stored;
   - whether it can be executed;
@@ -310,7 +331,7 @@ is for `doctor` to report whether the compositor offers it.
 | Phase 1 | When each opt-in becomes a default, and on what evidence |
 | Phase 2 | Adapter format: declarative TOML only, or also sandboxed scripts? |
 | Phase 3 | History storage: plain files with dedup, or an embedded store (SQLite)? |
-| Phase 4 | Whether to go beyond Hyprland at all; then the name, the crate split, and plugin vs upstream-only for Hyprland gaps |
+| Phase 4 | Which backend comes second (niri or sway); the name; the crate split; plugin vs upstream-only for Hyprland gaps |
 | Phase 5 | How deep to go into the Hyprland protocol implementation |
 | Phase 6 | Sync transport: bring-your-own folder, or a built-in peer link |
 
