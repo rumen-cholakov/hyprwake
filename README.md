@@ -59,7 +59,7 @@ nothing, while an idle desktop writes nothing at all.
 ## Install
 
 ```sh
-cargo install --git https://github.com/rumen-cholakov/hyprwake --tag v0.1.3
+cargo install --git https://github.com/rumen-cholakov/hyprwake --tag v0.2.0
 ```
 
 Or take the binary from a [release](https://github.com/rumen-cholakov/hyprwake/releases)
@@ -429,7 +429,7 @@ Omarchy team's call.
 To produce the submission directory for a tag:
 
 ```sh
-scripts/opr-bundle.sh v0.1.3
+scripts/opr-bundle.sh v0.2.0
 ```
 
 ## Credits
