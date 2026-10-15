@@ -72,6 +72,12 @@
   quietly. `doctor` reports the mode and warns when
   `dwindle:preserve_split` is off; `hyprwake diff` reports a workspace tiled
   differently from its snapshot.
+- **TUIs written in Node or Python are recognised.** The kernel names them
+  `node-MainThread` or `python3`, so `[tui] programs` could never find gemini,
+  amp or aider inside a terminal. A program run by an interpreter is now named
+  by its script (`…/bundle/gemini.js` is `gemini`, `python3 -m aider` is
+  `aider`) and reopened by that name, so an upgrade that moves its install
+  does not break the restore. None is added to the defaults.
 - **External providers.** `kind = "external"` hands capture and relaunch of
   a window class to a helper program speaking JSON on stdin and stdout, under
   a contract versioned separately from the snapshot schema. The helper runs

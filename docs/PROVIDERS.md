@@ -151,8 +151,8 @@ with the version recorded.
 | codex | shipped | `id_command` on its state database; `resume --last` fallback. Fixed in 0.2.0 not to splice the directory into a shell script. |
 | opencode | shipped | Validated against 1.18.32. `id_command` on `~/.local/share/opencode/opencode.db`, no shell. Excludes child sessions, which opencode writes for every subagent run in the parent's directory and which are usually the newest row. `--continue` fallback, which inside a git repository is project-wide rather than per-directory. |
 | crush | recipe | Resumes with `--session <id>`; `crush session last --cwd <dir>` is a candidate lookup. Not shipped: never used on the validation machine, so there are no sessions to check against, and `crush session` talks to a crush server socket — whether a lookup starts one is unconfirmed. |
-| gemini | not shipped | A Node program, so its process name is `node`, which `[tui] programs` cannot tell apart from any other Node program. It also resumes by *index* (`--resume 5`), which shifts as sessions are added. Matching programs by their script name as well as their process name would fix the first half; that is a separate change. |
-| aider, goose, amp | recipe | Not installed on the validation machine. aider (Python) and amp (Node) have the same process-name problem as gemini. |
+| gemini | recipe | A Node program: the kernel calls it `node-MainThread` (Node 26), and since 0.2.0 hyprwake names an interpreted program by its script, so `gemini` in `[tui] programs` finds it and reopens it by name — which survives a mise upgrade moving its install. Not in the defaults, and no resume rule: it resumes by *index* (`--resume 5`), which shifts as sessions are added. |
+| aider, goose, amp | recipe | Not installed on the validation machine. aider (Python, also `python -m aider`) and amp (Node) are found by script name like gemini; add them to `[tui] programs` to have them reopened. |
 
 ### Session managers
 

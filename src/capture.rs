@@ -347,9 +347,21 @@ fn terminal_argv(
     if let Some(tui) =
         process.find_descendant(client.pid, &config.tui_programs(), PROCESS_SEARCH_DEPTH)
     {
-        let argv = process
+        let mut argv = process
             .cmdline(tui)
             .or_else(|| process.comm(tui).map(|c| vec![c]))?;
+        // A script an interpreter runs is relaunched by its own name, not by
+        // the interpreter and a path into its install, which an upgrade moves
+        // (mise keeps one directory per version).
+        if process.comm(tui).as_deref() != process.program(tui).as_deref() {
+            if let (Some(name), Some((_, rest))) =
+                (process.program(tui), crate::process::script_name(&argv))
+            {
+                argv = std::iter::once(name)
+                    .chain(argv.into_iter().skip(rest))
+                    .collect();
+            }
+        }
         let mut argv: Vec<String> = argv
             .into_iter()
             .filter(|a| !VOLATILE_ARG_PREFIXES.iter().any(|p| a.starts_with(p)))
@@ -423,7 +435,7 @@ fn with_resume_args(
     process: &dyn ProcessInfoProvider,
     config: &Config,
 ) -> Vec<String> {
-    let Some(program) = process.comm(pid) else {
+    let Some(program) = process.program(pid) else {
         return argv;
     };
     let Some(rule) = config.tui.resume.get(&program) else {
@@ -1536,6 +1548,32 @@ exec_flag = "-e"
         let launch = &session.clients[0].launch;
         assert_eq!(launch.argv, vec!["/usr/bin/mailapp", "--tray"]);
         assert_eq!(launch.provider_state, None);
+    }
+
+    #[test]
+    fn an_interpreted_tui_is_relaunched_by_its_own_name() {
+        let mut cfg = config();
+        cfg.tui.programs.push("gemini".to_string());
+        let mut proc = MockProcessInfo::default();
+        proc.add(10, "foot", &["foot"], "/");
+        proc.add(11, "fish", &["fish"], "/");
+        proc.add(
+            12,
+            "node",
+            &[
+                "node",
+                "/home/u/.local/share/mise/installs/gemini/0.60.0/bundle/gemini.js",
+                "--model",
+                "x",
+            ],
+            "/w",
+        );
+        proc.link(10, 11).link(11, 12);
+        assert_eq!(
+            relaunch_argv(&client("foot", 10), &proc, &cfg).unwrap(),
+            vec!["foot", "-D", "/w", "gemini", "--model", "x"],
+            "by name, so an upgrade that moves the install does not break it"
+        );
     }
 
     #[test]

@@ -23,8 +23,23 @@ pub trait ProcessInfoProvider {
     /// for diagnosis; never used to decide anything.
     fn exe(&self, pid: i32) -> Option<PathBuf>;
 
+    /// The program a process is running, as `[tui] programs` names it: the
+    /// kernel's name for it, or — for a script an interpreter runs, which the
+    /// kernel names `node` or `python3` — the script's own name.
+    fn program(&self, pid: i32) -> Option<String> {
+        let comm = self.comm(pid)?;
+        if !is_interpreter(&comm) {
+            return Some(comm);
+        }
+        Some(
+            self.cmdline(pid)
+                .and_then(|argv| script_name(&argv).map(|(name, _)| name))
+                .unwrap_or(comm),
+        )
+    }
+
     /// Breadth-first search of the process tree under `pid` for a process
-    /// whose `comm` is in `names`.
+    /// whose program (see [`program`](Self::program)) is in `names`.
     ///
     /// Depth is bounded because a terminal running a shell running a
     /// multiplexer can nest arbitrarily, and the interesting programs live
@@ -35,7 +50,7 @@ pub trait ProcessInfoProvider {
         while head < queue.len() {
             let (current, depth) = queue[head];
             head += 1;
-            if let Some(name) = self.comm(current) {
+            if let Some(name) = self.program(current) {
                 if names.contains(&name) {
                     return Some(current);
                 }
@@ -46,6 +61,58 @@ pub trait ProcessInfoProvider {
         }
         None
     }
+}
+
+/// Interpreters whose process name says nothing about what they run.
+///
+/// Matched on the name's first `-`-separated part, versions trimmed: Node 26
+/// names its main thread, and so the process, `node-MainThread`, and Python
+/// appears as `python3.13`.
+fn is_interpreter(comm: &str) -> bool {
+    let first = comm.split('-').next().unwrap_or(comm);
+    let base = first.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    matches!(
+        base,
+        "node" | "nodejs" | "bun" | "python" | "pypy" | "ruby" | "perl"
+    )
+}
+
+/// The name of the script an interpreter's argv runs, and where the
+/// script's own arguments start.
+///
+/// `node /…/bin/gemini --resume` → `gemini`; `node /…/bundle/gemini.js` →
+/// `gemini`; `python3 -m aider` → `aider`. Code passed inline (`-c`, `-e`)
+/// has no name. Flags that take a value are stepped over with it.
+pub fn script_name(argv: &[String]) -> Option<(String, usize)> {
+    const TAKES_VALUE: &[&str] = &["-r", "--require", "--import", "--loader", "-X", "-W"];
+    const INLINE_CODE: &[&str] = &["-c", "-e", "--eval", "-p", "--print"];
+    const EXTENSIONS: &[&str] = &[".js", ".mjs", ".cjs", ".ts", ".py", ".rb", ".pl"];
+    let mut i = 1;
+    while let Some(arg) = argv.get(i) {
+        if INLINE_CODE.contains(&arg.as_str()) {
+            return None;
+        }
+        if arg == "-m" {
+            let module = argv.get(i + 1)?;
+            let name = module.split('.').next()?.to_string();
+            return (!name.is_empty()).then_some((name, i + 2));
+        }
+        if TAKES_VALUE.contains(&arg.as_str()) {
+            i += 2;
+            continue;
+        }
+        if arg.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        let file = std::path::Path::new(arg).file_name()?.to_str()?;
+        let stem = EXTENSIONS
+            .iter()
+            .find_map(|ext| file.strip_suffix(ext))
+            .unwrap_or(file);
+        return (!stem.is_empty()).then(|| (stem.to_string(), i + 1));
+    }
+    None
 }
 
 pub struct RealProcessInfo;
@@ -260,6 +327,69 @@ mod tests {
         m.add(2, "b", &["b"], "/");
         m.link(1, 2).link(2, 1);
         assert_eq!(m.find_descendant(1, &names(&["zzz"]), 3), None);
+    }
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_script_is_named_by_its_own_name_not_its_interpreters() {
+        for (cmdline, want) in [
+            (
+                vec!["node", "/home/u/.local/bin/gemini", "--yolo"],
+                Some(("gemini", 2)),
+            ),
+            (
+                vec!["node", "--no-warnings", "/opt/x/bundle/gemini.js", "-p"],
+                Some(("gemini", 3)),
+            ),
+            (
+                vec!["/usr/bin/python3", "/home/u/.local/bin/aider"],
+                Some(("aider", 2)),
+            ),
+            (
+                vec!["python3", "-X", "utf8", "-m", "aider.main", "--model", "x"],
+                Some(("aider", 5)),
+            ),
+            (
+                vec!["node", "-r", "ts-node/register", "app.ts"],
+                Some(("app", 4)),
+            ),
+            (vec!["python3", "-c", "print(1)"], None),
+            (vec!["node"], None),
+        ] {
+            let got = script_name(&argv(&cmdline));
+            assert_eq!(
+                got.as_ref().map(|(n, i)| (n.as_str(), *i)),
+                want,
+                "{cmdline:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_interpreted_tui_is_found_under_its_terminal() {
+        let mut m = MockProcessInfo::default();
+        m.add(10, "foot", &["foot"], "/");
+        m.add(11, "fish", &["fish"], "/w");
+        // Node 26's own name for itself, as /proc/<pid>/comm reports it.
+        m.add(
+            12,
+            "node-MainThread",
+            &["node", "/opt/gemini/bundle/gemini.js"],
+            "/w",
+        );
+        m.link(10, 11).link(11, 12);
+        assert_eq!(m.program(12).as_deref(), Some("gemini"));
+        assert_eq!(m.find_descendant(10, &names(&["gemini"]), 5), Some(12));
+        assert_eq!(
+            m.find_descendant(10, &names(&["node"]), 5),
+            None,
+            "a node program is not \"node\""
+        );
+        // A shell is still found by its own name.
+        assert_eq!(m.find_descendant(10, &names(&["fish"]), 5), Some(11));
     }
 
     #[test]

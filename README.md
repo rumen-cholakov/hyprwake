@@ -217,7 +217,9 @@ cwd_flag = "--cwd"           # a trailing "=" joins flag and value
 extra_args = []              # e.g. an --app-id that pins the window class
 
 [tui]
-programs = ["nvim", "yazi", "btop"]   # relaunched inside their terminal
+programs = ["nvim", "yazi", "btop"]   # relaunched inside their terminal; a
+                                      # Node or Python program by its script
+                                      # name ("gemini", "aider")
 
 # Programs that can reopen a specific session. Two strategies, tried in
 # order; every rule below ships by default.
