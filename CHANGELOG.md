@@ -148,6 +148,13 @@ information; there is nothing to convert either way.
 
 ### Fixes
 
+- **The watcher missed changes Hyprland does not announce.** Resizing a tiled
+  window or moving a split emits no event, so the snapshot — and now the
+  layout tree in it — kept the old geometry until something else happened.
+  `watch` now re-captures after `recheck_secs` (300) of quiet and saves only
+  if the desktop actually differs, so an idle desktop still writes nothing. It
+  also saves on group changes and on a workspace moved or renamed, which it
+  ignored before.
 - **An external provider's helper written moments before it ran could fail
   to start** with "text file busy" if another process forked meanwhile; the
   start is now retried briefly.

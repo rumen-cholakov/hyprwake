@@ -196,6 +196,8 @@ describing what is actually installed here.
 [general]
 sweep_timeout_secs = 20      # how long to wait for late windows
 debounce_ms = 3000           # quiet period before an event-driven save
+recheck_secs = 300           # watch: re-capture when quiet, save if changed
+                             # (resizing a tiled window emits no event)
 
 [launch]
 use_uwsm = true              # launch through uwsm-app (systemd scopes)

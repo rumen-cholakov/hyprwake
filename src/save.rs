@@ -45,6 +45,38 @@ pub fn perform_save(
     write_guarded(session, sessions_dir, config, force)
 }
 
+/// Capture the desktop and save it only if it differs from the snapshot on
+/// disk; `None` when nothing changed. For periodic re-checks, which would
+/// otherwise rewrite the same snapshot every few minutes and keep resetting
+/// its age.
+pub fn save_if_changed(
+    name: &str,
+    sessions_dir: &Path,
+    config: &Config,
+    hyprctl: &dyn HyprctlClient,
+    process: &dyn ProcessInfoProvider,
+) -> Result<Option<SaveOutcome>, SaveError> {
+    let session = capture_session(name, hyprctl, process, config)?;
+    if load_session(name, sessions_dir).is_ok_and(|previous| same_desktop(&previous, &session)) {
+        return Ok(None);
+    }
+    write_guarded(session, sessions_dir, config, false).map(Some)
+}
+
+/// Whether two snapshots describe the same desktop: everything but when
+/// they were taken and by what.
+fn same_desktop(a: &Session, b: &Session) -> bool {
+    let shape = |s: &Session| {
+        serde_json::json!({
+            "monitors": s.monitors,
+            "workspaces": s.workspaces,
+            "clients": s.clients,
+            "browser_profiles": s.browser_profiles,
+        })
+    };
+    shape(a) == shape(b)
+}
+
 /// Storage half of [`perform_save`], separated so the guard can be tested
 /// without a compositor. `force` writes whatever was captured.
 pub fn write_guarded(
@@ -90,6 +122,52 @@ pub fn write_guarded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recheck_writes_only_when_the_desktop_changed() {
+        use crate::hyprctl::mock::MockHyprctl;
+        use crate::hyprctl::HyprClient;
+        use crate::process::mock::MockProcessInfo;
+        let dir = TempDir::new().unwrap();
+        let window = |x: i32| HyprClient {
+            address: "0x1".into(),
+            class: "foot".into(),
+            initial_class: "foot".into(),
+            title: "t".into(),
+            initial_title: String::new(),
+            workspace: WorkspaceRef::new(1, "1"),
+            monitor: 0,
+            at: [x, 0],
+            size: [800, 600],
+            floating: true,
+            pinned: false,
+            fullscreen: 0,
+            focus_history_id: 0,
+            pid: 10,
+            mapped: true,
+            grouped: vec![],
+        };
+        let mut proc = MockProcessInfo::default();
+        proc.add(10, "foot", &["foot"], "/w");
+        let cfg = config();
+        let save = |frames| {
+            let hypr = MockHyprctl::new(vec![frames]);
+            save_if_changed("latest", dir.path(), &cfg, &hypr, &proc).unwrap()
+        };
+        assert_eq!(save(vec![window(0)]), Some(SaveOutcome::Saved(1)));
+        let first = std::fs::read_to_string(dir.path().join("latest.json")).unwrap();
+        assert_eq!(
+            save(vec![window(0)]),
+            None,
+            "nothing moved, nothing written"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("latest.json")).unwrap(),
+            first,
+            "the snapshot, timestamp included, is untouched"
+        );
+        assert_eq!(save(vec![window(40)]), Some(SaveOutcome::Saved(1)));
+    }
     use crate::session::{LaunchInfo, SessionClient};
     use crate::workspace::WorkspaceRef;
     use chrono::Utc;

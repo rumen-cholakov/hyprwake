@@ -32,6 +32,13 @@ const LAYOUT_EVENTS: &[&str] = &[
     "pin",
     "movewindowtoworkspace",
     "movewindowtoworkspacev2",
+    // Groups and workspaces change what a restore rebuilds.
+    "togglegroup",
+    "moveintogroup",
+    "moveoutofgroup",
+    "moveworkspace",
+    "moveworkspacev2",
+    "renameworkspace",
 ];
 
 pub fn is_layout_event(line: &str) -> bool {
@@ -125,6 +132,12 @@ pub fn watch(
     let mut debouncer = Debouncer::new(Duration::from_millis(config.general.debounce_ms));
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
+    // Resizing a tiled window or moving a split emits no event at all, so
+    // the layout recorded at the last save can go stale with nothing to say
+    // so. A slow, quiet re-check catches it, writing only when the desktop
+    // actually differs from what was saved.
+    let recheck = Duration::from_secs(config.general.recheck_secs);
+    let mut last_save = Instant::now();
 
     loop {
         line.clear();
@@ -144,7 +157,23 @@ pub fn watch(
         }
         if debouncer.should_fire(Instant::now()) {
             save_now(name, sessions_dir, config);
+            last_save = Instant::now();
+        } else if !recheck.is_zero() && !debouncer.is_pending() && last_save.elapsed() >= recheck {
+            recheck_now(name, sessions_dir, config);
+            last_save = Instant::now();
         }
+    }
+}
+
+/// Save only if the desktop differs from the snapshot on disk.
+fn recheck_now(name: &str, sessions_dir: &Path, config: &Config) {
+    let hyprctl = crate::hyprctl::RealHyprctl;
+    let process = crate::process::RealProcessInfo;
+    match crate::save::save_if_changed(name, sessions_dir, config, &hyprctl, &process) {
+        Ok(None) => {}
+        Ok(Some(SaveOutcome::Saved(n))) => log(format!("recheck: desktop changed, {n} windows")),
+        Ok(Some(_)) => {}
+        Err(e) => log(format!("recheck failed: {e}")),
     }
 }
 
@@ -290,6 +319,11 @@ mod tests {
         assert!(is_layout_event("closewindow>>0x1"));
         assert!(is_layout_event("movewindowv2>>0x1,3,3"));
         assert!(is_layout_event("changefloatingmode>>0x1,1"));
+        // Measured against Hyprland 0.56.2: groups and workspace moves have
+        // events of their own.
+        assert!(is_layout_event("togglegroup>>1,0x1,0x2"));
+        assert!(is_layout_event("moveworkspacev2>>3,3,HDMI-A-1"));
+        assert!(is_layout_event("renameworkspace>>3,mail"));
     }
 
     #[test]

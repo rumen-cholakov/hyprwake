@@ -70,6 +70,10 @@ impl Default for RestoreConfig {
     }
 }
 
+fn default_recheck_secs() -> u64 {
+    300
+}
+
 fn default_layout_min_confidence() -> f32 {
     0.7
 }
@@ -163,6 +167,11 @@ pub struct GeneralConfig {
     /// after a full snapshot is a session being torn down.
     #[serde(default = "default_drop_window_secs")]
     pub save_drop_window_secs: i64,
+    /// `watch` re-captures the desktop after this many quiet seconds and
+    /// saves if it changed: resizing a tiled window emits no event. 0 turns
+    /// it off.
+    #[serde(default = "default_recheck_secs")]
+    pub recheck_secs: u64,
     /// Restore aborts when more than this many windows are already open, so
     /// a stray invocation cannot duplicate a live desktop.
     #[serde(default = "default_abort_above")]
@@ -600,6 +609,7 @@ impl Default for GeneralConfig {
             tiled_map_timeout_ms: default_tiled_map_timeout(),
             save_drop_fraction: default_drop_fraction(),
             save_drop_window_secs: default_drop_window_secs(),
+            recheck_secs: default_recheck_secs(),
             abort_restore_above: default_abort_above(),
         }
     }
